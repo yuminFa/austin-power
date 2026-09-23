@@ -118,6 +118,19 @@ Claude Code hook을 등록하려면 `austin-power setup hooks`가 출력하는 J
 
 `PostCompact`는 세션 압축 요약을 자동 저장(증류)하고, `SessionStart`는 같은 프로젝트의 최근 기억을 세션 시작 컨텍스트에 주입합니다. `PostCompact`와 `SessionEnd`는 그와 별개로 세션 텍스트를 외부 LLM CLI(`codex exec`, 부재·실패 시 `claude -p`)에 넘겨 재사용 가능한 기억(최대 8개)을 뽑아 각각 저장합니다 — 이때 세션 텍스트가 해당 CLI(각 제공자)로 전송됩니다. 백그라운드 워커가 처리하므로 hook 자체는 즉시 반환합니다. 세션 종료·compact마다 LLM 호출은 0~2회(입력이 200자 미만이거나 꺼져 있으면 0회, 보통 1회, codex 실패 후 claude로 폴백하면 2회 — 비용 발생 가능)입니다. `AUSTIN_POWER_EXTRACT=off`로 끌 수 있고, 로그는 `<home>/extract.log`에 남습니다(프롬프트·본문은 기록하지 않음).
 
+### Codex CLI hook 등록
+
+Codex CLI도 자체 hook 이벤트(`PreCompact`·`SessionEnd` 등)를 지원합니다. `~/.codex/hooks.json`에 다음을 등록하세요(레포 밖, 사용자 로컬 설정입니다):
+
+```json
+{
+  "PreCompact": "austin-power hook pre-compact",
+  "SessionEnd": "austin-power hook session-end"
+}
+```
+
+`pre-compact`는 Claude Code에는 등록하지 않습니다(Claude는 `PostCompact`의 요약을 그대로 씁니다) — Codex 전용 이벤트로, 압축 직전 시점의 Codex rollout transcript를 워커에 넘겨 §2.12 규칙대로 파싱합니다. Codex rollout(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage"|"AgentMessage",...}}}`, 압축 경계 `{"type":"compacted"}`)과 옛 형식(`payload.type` 이 `user_message`/`agent_message`) 모두 자동 인식합니다.
+
 ## 도구 5개
 
 | 도구 | 설명 |

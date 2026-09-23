@@ -83,6 +83,45 @@ def _message_text(e) -> str:
     return ""
 
 
+_CODEX_ITEM_PREFIX = {"UserMessage": "[user]", "AgentMessage": "[assistant]"}
+_CODEX_LEGACY_PREFIX = {"user_message": "[user]", "agent_message": "[assistant]"}
+
+
+def _codex_message_text(e) -> str:
+    """Codex CLI rollout lines (spec 2.12.3) — a different JSONL shape than
+    Claude Code's, auto-detected line by line and folded into the same
+    transcript_tail() output. `response_item`/`reasoning`/tool calls (and any
+    other payload.type) are ignored by falling through to "" below."""
+    if not isinstance(e, dict) or e.get("type") != "event_msg":
+        return ""
+    payload = e.get("payload")
+    if not isinstance(payload, dict):
+        return ""
+    ptype = payload.get("type")
+    if ptype == "item_completed":
+        item = payload.get("item")
+        if not isinstance(item, dict):
+            return ""
+        prefix = _CODEX_ITEM_PREFIX.get(item.get("type"))
+        content = item.get("content")
+        if prefix is None or not isinstance(content, list):
+            return ""
+        text = "\n".join(
+            b.get("text", "") for b in content
+            if isinstance(b, dict) and isinstance(b.get("type"), str) and b.get("type").lower() == "text"
+        )
+    else:
+        prefix = _CODEX_LEGACY_PREFIX.get(ptype)
+        message = payload.get("message")
+        if prefix is None or not isinstance(message, str):
+            return ""
+        text = message
+    text = _SYSTEM_REMINDER_RE.sub("", text).strip()
+    if not text or text.startswith(("<command-", "<local-command-")):
+        return ""
+    return f"{prefix}\n{text}"
+
+
 def transcript_tail(path, max_chars: int = MAX_CHARS) -> str:
     # Stream line by line: a long session's JSONL can be large, so keep only the
     # messages after the last compact_boundary, bounded to ~2x the output cap.
@@ -101,7 +140,10 @@ def transcript_tail(path, max_chars: int = MAX_CHARS) -> str:
                 if isinstance(e, dict) and e.get("type") == "system" and e.get("subtype") == "compact_boundary":
                     messages.clear(); total = 0
                     continue
-                if m := _message_text(e):
+                if isinstance(e, dict) and e.get("type") == "compacted":
+                    messages.clear(); total = 0
+                    continue
+                if m := (_message_text(e) or _codex_message_text(e)):
                     messages.append(m); total += len(m) + 2
                     while len(messages) > 1 and total - len(messages[0]) - 2 >= 2 * max_chars:
                         total -= len(messages.popleft()) + 2
@@ -445,8 +487,12 @@ def main(argv: list[str]) -> int:
         if source == "compact":
             text = obj.get("text")
             if not isinstance(text, str):
-                log(_line(source, sid, "none", 0, 0, skipped="badjob"))
-                return 0
+                tp = obj.get("transcript_path")
+                if isinstance(tp, str) and tp:
+                    text = transcript_tail(tp, MAX_CHARS)
+                else:
+                    log(_line(source, sid, "none", 0, 0, skipped="badjob"))
+                    return 0
         else:
             text = transcript_tail(obj.get("transcript_path") or "", MAX_CHARS)
 

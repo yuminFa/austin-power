@@ -47,6 +47,37 @@ def test_malformed_stdin_is_fail_open(raw, tmp_path, monkeypatch):
         code, out, _ = run(ev, None, tmp_path, monkeypatch, raw=raw)
         assert code == 0 and out == ""
 
+
+# ---- C24: pre-compact (Codex CLI, §2.12) ----
+
+def test_pre_compact_spawns_extract_job(tmp_path, monkeypatch, fake_popen):
+    transcript = tmp_path / "rollout.jsonl"
+    p = {"session_id": "abc", "cwd": str(tmp_path), "transcript_path": str(transcript)}
+    code, out, _err = run("pre-compact", p, tmp_path, monkeypatch)
+    assert code == 0 and out == ""
+    assert len(fake_popen) == 1
+    job = json.loads(_job_files(tmp_path)[0].read_text())
+    assert job == {"source": "compact", "session_id": "abc", "cwd": str(tmp_path), "transcript_path": str(transcript)}
+
+
+@pytest.mark.parametrize("payload", [
+    {"cwd": "x", "transcript_path": "t"},
+    {"session_id": "", "cwd": "x", "transcript_path": "t"},
+    {"session_id": "s", "cwd": "x"},
+    {"session_id": "s", "cwd": "x", "transcript_path": ""},
+    {"session_id": "s", "cwd": "x", "transcript_path": 3},
+])
+def test_pre_compact_missing_fields_is_noop(payload, tmp_path, monkeypatch, fake_popen):
+    code, out, _err = run("pre-compact", payload, tmp_path, monkeypatch)
+    assert code == 0 and out == ""
+    assert fake_popen == [] and _job_files(tmp_path) == []
+
+
+def test_extract_off_skips_spawn_pre_compact(tmp_path, monkeypatch, fake_popen):
+    p = {"session_id": "abc", "cwd": str(tmp_path), "transcript_path": str(tmp_path / "t.jsonl")}
+    run("pre-compact", p, tmp_path, monkeypatch, extra_env={"AUSTIN_POWER_EXTRACT": "off"})
+    assert fake_popen == [] and _job_files(tmp_path) == []
+
 def test_post_compact_empty_summary_noop(tmp_path, monkeypatch):
     code, _out, _ = run("post-compact", {"session_id": "s", "cwd": str(tmp_path), "compact_summary": ""}, tmp_path, monkeypatch)
     assert code == 0 and not (tmp_path / "h" / "memory.db").exists()
@@ -221,7 +252,7 @@ def test_session_end_missing_fields_is_noop(payload, tmp_path, monkeypatch, fake
     assert fake_popen == [] and _job_files(tmp_path) == []
 
 # C6: recursion guard — AUSTIN_POWER_EXTRACTOR_CHILD=1 makes every event a silent no-op.
-@pytest.mark.parametrize("event", ["post-compact", "session-start", "session-end"])
+@pytest.mark.parametrize("event", ["post-compact", "session-start", "session-end", "pre-compact"])
 def test_extractor_child_short_circuits_every_event(event, tmp_path, monkeypatch, fake_popen):
     code, out, err = run(event, {"session_id": "s", "cwd": str(tmp_path), "compact_summary": "x" * 250,
                                   "transcript_path": str(tmp_path / "t.jsonl")},

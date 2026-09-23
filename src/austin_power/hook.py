@@ -161,6 +161,16 @@ def _session_end(data: dict, cfg, env, out, err) -> None:
         return
     spawn_extract(cfg, env, {"source": "session-end", "session_id": sid, "cwd": data.get("cwd") or "", "transcript_path": path})
 
+def _pre_compact(data: dict, cfg, env, out, err) -> None:
+    """Codex CLI's PreCompact event (spec 2.12) — not registered with Claude
+    Code, which uses PostCompact's own summary instead. Same validation as
+    _session_end; no parsing here, the worker reads transcript_path."""
+    sid = data.get("session_id")
+    path = data.get("transcript_path")
+    if not isinstance(sid, str) or not sid or not isinstance(path, str) or not path:
+        return
+    spawn_extract(cfg, env, {"source": "compact", "session_id": sid, "cwd": data.get("cwd") or "", "transcript_path": path})
+
 def _session_start(data: dict, cfg, env, out, err) -> None:
     if data.get("source") == "compact":
         return
@@ -176,7 +186,7 @@ def _session_start(data: dict, cfg, env, out, err) -> None:
     if text:
         out.write(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}, ensure_ascii=False))
 
-_HANDLERS = {"post-compact": _post_compact, "session-end": _session_end}
+_HANDLERS = {"post-compact": _post_compact, "session-end": _session_end, "pre-compact": _pre_compact}
 
 def main(event: str, *, stdin=None, stdout=None, stderr=None, env=None) -> int:
     stdin, stdout, stderr = stdin or sys.stdin, stdout or sys.stdout, stderr or sys.stderr

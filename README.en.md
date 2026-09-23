@@ -48,6 +48,19 @@ austin-power setup hooks    # -> Claude Code PostCompact/SessionStart/SessionEnd
 
 See the Korean README's "Claude Code / Codex에 등록하기" section for real, byte-for-byte output.
 
+### Codex CLI hooks
+
+Codex CLI supports its own hook events (`PreCompact`, `SessionEnd`, etc.), separate from Claude Code's. Register these in `~/.codex/hooks.json` (outside this repo, your local config):
+
+```json
+{
+  "PreCompact": "austin-power hook pre-compact",
+  "SessionEnd": "austin-power hook session-end"
+}
+```
+
+`pre-compact` is never registered with Claude Code (Claude uses `PostCompact`'s own summary instead) — it's Codex-only, and hands the worker the Codex rollout transcript just before compaction so it can be parsed per §2.12. Both the current Codex rollout shape (`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage"|"AgentMessage",...}}}`, with `{"type":"compacted"}` as the compaction boundary) and the legacy shape (`payload.type` of `user_message`/`agent_message`) are auto-detected.
+
 ## Tools
 
 | Tool | What it does |

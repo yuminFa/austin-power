@@ -166,6 +166,79 @@ def test_transcript_tail_single_message_over_cap_keeps_tail(tmp_path):
     assert len(out) == 100 and out == ("[user]\n" + "x" * 500)[-100:]
 
 
+# ---- C23: Codex rollout format (transcript_tail auto-detects, §2.12.3) ----
+
+def test_transcript_tail_codex_no_boundary_takes_everything(tmp_path):
+    rows = [
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "UserMessage", "content": [{"type": "text", "text": "hi"}]}}},
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "AgentMessage", "content": [{"type": "Text", "text": "there", "phase": "final"}]}}},
+    ]
+    p = _jsonl(tmp_path, "t.jsonl", rows)
+    assert extract.transcript_tail(p, 10000) == "[user]\nhi\n\n[assistant]\nthere"
+
+
+def test_transcript_tail_codex_compacted_boundary_clears_prior_messages(tmp_path):
+    rows = [
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "UserMessage", "content": [{"type": "text", "text": "dropped"}]}}},
+        {"type": "compacted"},
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "UserMessage", "content": [{"type": "text", "text": "kept"}]}}},
+    ]
+    p = _jsonl(tmp_path, "t.jsonl", rows)
+    assert extract.transcript_tail(p, 10000) == "[user]\nkept"
+
+
+def test_transcript_tail_codex_legacy_format_accepted_when_mixed_with_new(tmp_path):
+    rows = [
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "legacy user"}},
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "AgentMessage", "content": [{"type": "text", "text": "new assistant"}]}}},
+        {"type": "event_msg", "payload": {"type": "agent_message", "message": "legacy assistant"}},
+    ]
+    p = _jsonl(tmp_path, "t.jsonl", rows)
+    out = extract.transcript_tail(p, 10000)
+    assert out == "[user]\nlegacy user\n\n[assistant]\nnew assistant\n\n[assistant]\nlegacy assistant"
+
+
+def test_transcript_tail_codex_excludes_reasoning_response_item_and_tool_calls(tmp_path):
+    rows = [
+        {"type": "response_item", "payload": {"type": "message", "content": "irrelevant"}},
+        {"type": "event_msg", "payload": {"type": "reasoning", "text": "thinking..."}},
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "FunctionCall", "content": [{"type": "text", "text": "tool call"}]}}},
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "UserMessage", "content": [{"type": "text", "text": "actual message"}]}}},
+    ]
+    p = _jsonl(tmp_path, "t.jsonl", rows)
+    assert extract.transcript_tail(p, 10000) == "[user]\nactual message"
+
+
+def test_transcript_tail_codex_strips_system_reminder_and_excludes_command_tags(tmp_path):
+    rows = [
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "UserMessage",
+            "content": [{"type": "text", "text": "keep <system-reminder>secret</system-reminder> this"}]}}},
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "UserMessage", "content": [{"type": "text", "text": "<command-name>ls</command-name>"}]}}},
+    ]
+    p = _jsonl(tmp_path, "t.jsonl", rows)
+    assert extract.transcript_tail(p, 10000) == "[user]\nkeep  this"
+
+
+def test_transcript_tail_codex_empty_text_excluded(tmp_path):
+    rows = [
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "UserMessage", "content": [{"type": "text", "text": "  "}]}}},
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "UserMessage", "content": [{"type": "text", "text": "real"}]}}},
+    ]
+    p = _jsonl(tmp_path, "t.jsonl", rows)
+    assert extract.transcript_tail(p, 10000) == "[user]\nreal"
+
+
 # ---- build_prompt ----
 
 def test_build_prompt_wraps_transcript_with_source_and_project():
@@ -475,6 +548,28 @@ def test_main_missing_job_file_is_badjob(tmp_path, monkeypatch):
     monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
     ghost = _job_dir(tmp_path) / "ghost.json"
     assert extract.main([str(ghost)]) == 0
+    assert "skipped=badjob" in _read_log(tmp_path)
+
+
+# C25: compact job with transcript_path but no text -> falls back to transcript_tail.
+def test_main_compact_job_uses_transcript_path_when_no_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
+    monkeypatch.setenv("AUSTIN_POWER_CODEX_BIN", str(tmp_path / "no-such-codex-bin"))
+    monkeypatch.setenv("AUSTIN_POWER_CLAUDE_BIN", str(tmp_path / "no-such-claude-bin"))
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(json.dumps({"type": "user", "message": {"content": "y" * 250}}))
+    job = _write_job(tmp_path, {"source": "compact", "session_id": "abcdefgh", "cwd": "", "transcript_path": str(transcript)})
+    assert extract.main([str(job)]) == 0
+    assert not job.exists()
+    log = _read_log(tmp_path)
+    assert "skipped" not in log
+    assert "backend=none saved=0 failed=0" in log
+
+
+def test_main_compact_job_without_text_or_transcript_path_is_badjob(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
+    job = _write_job(tmp_path, {"source": "compact", "session_id": "abc"})
+    assert extract.main([str(job)]) == 0
     assert "skipped=badjob" in _read_log(tmp_path)
 
 

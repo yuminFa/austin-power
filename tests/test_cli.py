@@ -83,6 +83,20 @@ def test_hook_accepts_session_end_event(tmp_path, monkeypatch):
     assert main(["hook", "session-end"]) == 0
 
 
+# C24 (spec §2.12): pre-compact is a hook event (Codex CLI), but never a
+# Claude Code registration — it must not show up in `setup hooks` output.
+def test_hook_accepts_pre_compact_event(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO("{}"))
+    assert main(["hook", "pre-compact"]) == 0
+
+
+def test_setup_hooks_omits_pre_compact(tmp_path, capsys, monkeypatch):
+    _code, out = run(["setup", "hooks"], tmp_path, capsys, monkeypatch)
+    assert "PreCompact" not in out.out
+    assert "pre-compact" not in out.out
+
+
 def test_hook_rejects_unknown_event(tmp_path, capsys, monkeypatch):
     code, _out = run(["hook", "bogus"], tmp_path, capsys, monkeypatch)
     assert code == 2

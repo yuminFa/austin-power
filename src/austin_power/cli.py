@@ -40,7 +40,7 @@ def _parser() -> argparse.ArgumentParser:
     i.add_argument("file")
     i.add_argument("--dry-run", action="store_true")
     h = sub.add_parser("hook", help="Claude Code hook entry points (read JSON on stdin)")
-    h.add_argument("event", choices=["post-compact", "session-start", "session-end"])
+    h.add_argument("event", choices=["post-compact", "session-start", "session-end", "pre-compact"])
     return p
 
 
