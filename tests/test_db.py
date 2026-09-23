@@ -93,7 +93,10 @@ def test_open_db_creates_new_db_file_private_even_in_shared_dir(tmp_path):
     os.chmod(shared, 0o755)  # pre-existing dir, left untouched by _mkdir_private
     path = shared / "m.db"
 
-    old_umask = os.umask(0o022)
+    # A restrictive umask (masking owner bits, not just group/other) is the
+    # case that actually exercises the "regardless of umask" guarantee: 0o022
+    # never masks anything in 0o600 and would pass even without the fix.
+    old_umask = os.umask(0o277)
     try:
         c = db.open_db(path)
         try:

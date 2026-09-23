@@ -87,7 +87,14 @@ def _create_private(path: Path) -> None:
         fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
         return  # lost the race to another opener; leave its file as-is
-    os.close(fd)
+    try:
+        # The mode passed to os.open is still filtered by the process umask
+        # (e.g. 0277 or 0777 would leave the file 0400 or 000), which would
+        # defeat the "0600 regardless of umask" guarantee this function
+        # promises. fchmod after the fact is not subject to umask.
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
 
 
 def open_db(path: Path, *, busy_timeout: int = 5000, rebuild_allowed: bool = True) -> apsw.Connection:
