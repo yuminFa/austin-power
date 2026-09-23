@@ -1,0 +1,18 @@
+# Install (user unit, no root needed):
+#   mkdir -p ~/.config/systemd/user
+#   cp austin-power.service ~/.config/systemd/user/
+#   systemctl --user enable --now austin-power
+#
+# ExecStart assumes `uv tool install` put the binary at ~/.local/bin/austin-power;
+# replace with the output of `which austin-power` if it's somewhere else.
+[Unit]
+Description=austin-power (lightweight Korean-aware memory server for coding agents)
+After=network.target
+
+[Service]
+ExecStart=%h/.local/bin/austin-power serve
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Install:
+    cp io.github.yuminfa.austin-power.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/io.github.yuminfa.austin-power.plist
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.github.yuminfa.austin-power</string>
+	<key>ProgramArguments</key>
+	<array>
+		<!-- replace with the output of `which austin-power` -->
+		<string>/ABSOLUTE/PATH/TO/austin-power</string>
+		<string>serve</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/tmp/austin-power.log</string>
+</dict>
+</plist>
