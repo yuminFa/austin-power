@@ -1,3 +1,4 @@
+import os
 import threading
 
 import pytest
@@ -23,6 +24,16 @@ def test_read_empty_raises(tmp_path):
     p = tmp_path / "token"; p.write_text("  \n")
     with pytest.raises(TokenError):
         read_token(p)
+
+@pytest.mark.skipif(os.name != "posix", reason="posix permission bits only")
+def test_read_warns_on_loose_permissions(tmp_path, caplog):
+    p = tmp_path / "token"
+    p.write_text("sometoken\n")
+    p.chmod(0o644)
+    with caplog.at_level("WARNING", logger="austin_power.auth"):
+        assert read_token(p) == "sometoken"
+    assert any(str(p) in r.getMessage() and "chmod 600" in r.getMessage() for r in caplog.records)
+
 
 def test_read_missing_raises(tmp_path):
     with pytest.raises(TokenError):

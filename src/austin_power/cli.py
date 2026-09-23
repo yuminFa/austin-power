@@ -66,27 +66,38 @@ def main(argv: list[str] | None = None) -> int:
         return serve(cfg)
 
     if args.cmd == "status":
+        # Loopback health checks must never go through an env-configured proxy
+        # (HTTP_PROXY/http_proxy etc.) — urlopen's default opener honors those
+        # via ProxyHandler.from_environment(), so build a proxy-free one.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
-            with urllib.request.urlopen(cfg.base_url + "/health", timeout=2) as r:
+            with opener.open(cfg.base_url + "/health", timeout=2) as r:
                 info = json.load(r)
-            print(f"running: {cfg.base_url} (v{info.get('version', '?')})")
-            return 0
         except Exception:  # noqa: BLE001 - any failure (refused, timeout, bad JSON) means "not running"
             print(f"not running: {cfg.base_url}")
             return 1
+        if isinstance(info, dict) and info.get("status") == "ok" and info.get("name") == "austin-power":
+            print(f"running: {cfg.base_url} (v{info.get('version', '?')})")
+            return 0
+        print(f"not running: {cfg.base_url} (port answered but it is not austin-power)")
+        return 1
 
     from austin_power import auth
 
     if args.cmd == "token":
         ensure_home(cfg)
-        if args.rotate:
-            print(auth.rotate_token(cfg.token_path))
-            print(
-                "token rotated: restart the server and re-register clients (austin-power setup claude|codex)",
-                file=sys.stderr,
-            )
-        else:
-            print(auth.ensure_token(cfg.token_path))
+        try:
+            if args.rotate:
+                print(auth.rotate_token(cfg.token_path))
+                print(
+                    "token rotated: restart the server and re-register clients (austin-power setup claude|codex)",
+                    file=sys.stderr,
+                )
+            else:
+                print(auth.ensure_token(cfg.token_path))
+        except auth.TokenError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
         return 0
 
     if args.cmd == "setup":
@@ -99,7 +110,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 2
         ensure_home(cfg)
-        token = auth.ensure_token(cfg.token_path)
+        try:
+            token = auth.ensure_token(cfg.token_path)
+        except auth.TokenError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
         if args.target == "claude":
             print(
                 f'claude mcp add --transport http --scope user austin-power {cfg.mcp_url} '

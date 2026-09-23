@@ -9,6 +9,7 @@ outside; it's fine for a test file dedicated to this one subsystem.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import socket
@@ -79,6 +80,35 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def _trigger_save(port: int, home) -> None:
+    """Since the worker now spawns lazily (spec §2.5.1: on first real Kiwi
+    call, not merely because the server opened its DB), tests that need a
+    live worker child must actually exercise a write, not just wait for
+    /health."""
+    token = (home / "token").read_text().strip()
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "save", "arguments": {"title": "t", "body": "b"}},
+        }
+    ).encode()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/mcp",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2025-06-18",
+            "Authorization": f"Bearer {token}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=10):
+        pass
 
 
 def _wait_health(port: int, timeout: float = 15.0) -> None:
@@ -183,6 +213,7 @@ def test_sigterm_of_serve_leaves_no_kiwi_worker_child(tmp_path):
     proc = _spawn_serve(home, port)
     try:
         _wait_health(port)
+        _trigger_save(port, home)
         worker_pid = _worker_child_pid(proc.pid)
         assert _pid_alive(worker_pid)
 
@@ -208,6 +239,7 @@ def test_sigkill_of_parent_worker_exits_via_eof(tmp_path):
     proc = _spawn_serve(home, port)
     try:
         _wait_health(port)
+        _trigger_save(port, home)
         worker_pid = _worker_child_pid(proc.pid)
 
         os.kill(proc.pid, signal.SIGKILL)
@@ -289,8 +321,6 @@ def test_worker_wire_protocol_directly():
     try:
         ready = proc.stdout.readline()
         assert ready, proc.stderr.read()
-        import json
-
         msg = json.loads(ready)
         assert msg["ready"] is True
         assert msg["signature"] == tokenizer.signature()
@@ -317,3 +347,30 @@ def test_default_backend_is_inproc():
     """Item (b): default backend is inproc, so the post-compact hook fallback
     (which never calls set_backend) never spawns a worker process."""
     assert isinstance(tokenizer._backend, tokenizer._InprocBackend)
+
+
+# --- lazy worker spawn (spec §2.5.1: worker starts on first real Kiwi call,
+# not merely because a DB was opened) --------------------------------------
+
+
+def test_new_schema_creation_does_not_spawn_worker(tmp_path):
+    tokenizer.set_backend("worker", idle_seconds=600)
+    conn = db.open_db(tmp_path / "new.db")  # v==0 branch: CREATE VIRTUAL TABLE ... tokenize='kiwi'
+    assert tokenizer._backend._proc is None
+    conn.close()
+
+
+def test_open_db_on_up_to_date_db_does_not_spawn_worker_but_save_does(tmp_path):
+    path = tmp_path / "m.db"
+    tokenizer.set_backend("inproc")
+    db.open_db(path).close()  # create schema with the cheap in-process backend first
+
+    tokenizer.set_backend("worker", idle_seconds=600)
+    conn = db.open_db(path)  # already up to date -> no signature-mismatch rebuild
+    assert tokenizer._backend._proc is None
+
+    from austin_power import store
+
+    store.save(conn, title="t", body="b")  # write_txn's own ensure_ready() spawns it
+    assert tokenizer._backend._proc is not None
+    conn.close()

@@ -1,6 +1,9 @@
+import contextlib
 import json
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from austin_power.cli import main
 
@@ -9,6 +12,33 @@ def run(argv, tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
     code = main(argv)
     return code, capsys.readouterr()
+
+
+@contextlib.contextmanager
+def health_stub(payload: dict):
+    """A local HTTP server on 127.0.0.1 that answers GET /health with `payload`
+    as JSON, standing in for the real austin-power server's health check."""
+    body = json.dumps(payload).encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):  # silence request logging in test output
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
 
 
 def test_version(tmp_path, capsys, monkeypatch):
@@ -56,9 +86,37 @@ def test_status_not_running(tmp_path, capsys, monkeypatch):
     assert not (tmp_path / "h").exists()  # status never creates home
 
 
+def test_status_ignores_env_proxy(tmp_path, capsys, monkeypatch):
+    with health_stub({"status": "ok", "name": "austin-power", "version": "0.1.0"}) as port:
+        # An HTTP proxy pointed at a closed port: if status honored it, the
+        # request would fail (connection refused) instead of reaching the stub.
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+        monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+        code, out = run(["status", "--port", str(port)], tmp_path, capsys, monkeypatch)
+    assert code == 0 and "running:" in out.out
+
+
+def test_status_rejects_non_austin_power_payload(tmp_path, capsys, monkeypatch):
+    with health_stub({"status": "ok", "name": "other"}) as port:
+        code, out = run(["status", "--port", str(port)], tmp_path, capsys, monkeypatch)
+    assert code == 1
+    assert "not running:" in out.out and "port answered but it is not austin-power" in out.out
+
+
 def test_bad_port_exit_2(tmp_path, capsys, monkeypatch):
     code, _ = run(["status", "--port", "abc"], tmp_path, capsys, monkeypatch)
     assert code == 2
+
+
+def test_token_empty_file_errors_cleanly(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
+    (tmp_path / "h").mkdir(parents=True)
+    (tmp_path / "h" / "token").write_text("  \n")
+    code = main(["token"])
+    out = capsys.readouterr()
+    assert code == 1
+    assert out.err.startswith("error: ")
+    assert "Traceback" not in out.err
 
 
 def test_python_m(tmp_path):

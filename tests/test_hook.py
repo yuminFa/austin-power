@@ -40,6 +40,17 @@ def test_post_compact_fallback_writes_and_upserts(tmp_path, monkeypatch):
     assert conn.execute("select count(*), title, kind, project, body from note").fetchone() == (1, "session abc", "session", "proj", "두 번째 요약")
 
 @pytest.mark.kiwi
+def test_post_compact_fallback_creates_private_home(tmp_path, monkeypatch):
+    p = {"session_id": "abc", "cwd": str(tmp_path), "compact_summary": "요약"}
+    assert run("post-compact", p, tmp_path, monkeypatch)[0] == 0
+    home = tmp_path / "h"
+    assert home.is_dir()
+    assert (home.stat().st_mode & 0o777) == 0o700
+    # the db file itself doesn't need its own restrictive mode: a 0700 parent
+    # already blocks group/other from traversing into the directory at all.
+    assert (home / "memory.db").exists()
+
+@pytest.mark.kiwi
 def test_post_compact_no_fallback_when_server_lock_held(tmp_path, monkeypatch):
     lock = db.ServerLock(tmp_path / "h" / "server.lock"); assert lock.acquire()
     try:

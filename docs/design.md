@@ -89,7 +89,7 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 
 | 원래 설계 | v0.1 | 이유 |
 |---|---|---|
-| 상주 데몬 없음, 세션마다 stdio 서버 | 전역 HTTP 서버 1개(상주) | Kiwi 모델 로딩 비용(초 단위)을 세션마다 지불하지 않고 한 번만 낸다. 대가로 상주 메모리가 0이 아니게 된다(Kiwi 모델이 상주). |
+| 상주 데몬 없음, 세션마다 stdio 서버 | 전역 HTTP 서버 1개(상주) | Kiwi 모델 로딩 비용(초 단위)을 세션마다 지불하지 않고 한 번만 낸다. Kiwi 자체는 서버에 상주하지 않고 첫 호출 때 기동해 유휴 시 종료되는 별도 워커 프로세스에서 돈다(§2.5.1) — 유휴 서버는 ~70MB. |
 | TypeScript + better-sqlite3 | Python + apsw | Kiwi(`kiwipiepy`)를 그대로 쓰고, apsw wheel이 SQLite를 번들해 환경의 SQLite 버전과 무관해지며, FTS5 커스텀 토크나이저를 Python으로 등록할 수 있다. |
 | `tokenize='unicode61'` | Kiwi 기반 커스텀 토크나이저 `kiwi` | 한국어 조사·어미 분리가 필요하다. |
 | `id TEXT PRIMARY KEY` | `id INTEGER PRIMARY KEY` | 명시적 정수 기본키가 없으면 `VACUUM`이 rowid를 재번호해 external-content FTS가 어긋난다. |

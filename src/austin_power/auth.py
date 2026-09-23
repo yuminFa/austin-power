@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import secrets
 from pathlib import Path
+
+log = logging.getLogger("austin_power.auth")
 
 
 class TokenError(RuntimeError):
@@ -24,6 +27,13 @@ def read_token(path: Path) -> str:
         token = path.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         raise TokenError(f"token file not found: {path}") from None
+    if os.name == "posix":
+        mode = path.stat().st_mode
+        if mode & 0o077:
+            log.warning(
+                "token file %s is readable by group/other (mode %04o); run `chmod 600 %s`",
+                path, mode & 0o777, path,
+            )
     if not token:
         raise TokenError(f"token file is empty: {path} — run `austin-power token --rotate`")
     return token

@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from austin_power import auth
+from austin_power import auth, config
 from austin_power.config import ConfigError, load_config
 
 SUMMARY_MAX, SUMMARY_KEEP = 32000, 31000
@@ -60,6 +60,10 @@ def call_tool(cfg, token: str, name: str, args: dict, timeout: float = 5.0) -> d
 
 def _fallback_save(cfg, fields: dict, err) -> None:
     from austin_power import db, store  # heavy imports only here
+    # Create (or fix up) the home directory with 0700 *before* acquiring the
+    # lock: ServerLock.acquire() itself would happily mkdir a missing parent
+    # with the process umask, which is not private.
+    config.ensure_home(cfg)
     lock = db.ServerLock(cfg.lock_path)
     if not lock.acquire():
         print(f"austin-power: server running but unreachable at {cfg.mcp_url} — check AUSTIN_POWER_HOST/PORT", file=err)

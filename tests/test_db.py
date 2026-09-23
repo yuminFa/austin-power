@@ -1,3 +1,5 @@
+import os
+
 import apsw
 import pytest
 
@@ -70,6 +72,14 @@ def test_readonly_open(tmp_path):
     assert r.execute("select count(*) from note").fetchone()[0] == 0
     with pytest.raises(apsw.ReadOnlyError):
         r.execute("insert into meta values('x','y')")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="posix permission bits only")
+def test_open_db_creates_new_parent_dirs_private(tmp_path):
+    path = tmp_path / "new" / "sub" / "m.db"
+    db.open_db(path).close()
+    assert (tmp_path / "new" / "sub").is_dir()
+    assert ((tmp_path / "new" / "sub").stat().st_mode & 0o777) == 0o700
 
 
 def test_second_lock_fails(tmp_path):

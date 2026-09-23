@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 import time
 from datetime import UTC, datetime
@@ -35,10 +36,14 @@ def _ts(field: str, value) -> int | None:
         n = (dt if dt.tzinfo else dt.replace(tzinfo=UTC)).timestamp()
     else:
         raise ValueError(f"{field}: not a timestamp")  # noqa: TRY004 - ValueError is this function's contract
-    n = int(n)  # floor for non-negative values
+    # Validate the untruncated float first: int() truncates toward zero, not
+    # floor, so a small negative value like -0.1 (or an ISO timestamp just
+    # before the epoch, e.g. 1969-12-31T23:59:59.9Z) would otherwise become
+    # int(-0.1) == 0 and slip past a bounds check done only on the truncated
+    # integer.
     if not 0 <= n <= MAX_TS:
         raise ValueError(f"{field}: out of range")
-    return n
+    return int(n)  # floor for non-negative values
 
 
 def parse_line(line: str) -> store.ImportRow:
@@ -62,7 +67,7 @@ def parse_line(line: str) -> store.ImportRow:
     return store.ImportRow(title, body, project, kind, sid, c, u)
 
 
-def _simulate_apply(row: store.ImportRow, existing, action: str):
+def _simulate_apply(row: store.ImportRow, existing, action: str, now: int):
     """Shadow-state form of what store.import_row would leave in the DB for
     `row`, given `existing` (the row's prior shadow/DB state) and the `action`
     store._decide chose — used only to keep dry-run's per-line simulation in
@@ -70,7 +75,11 @@ def _simulate_apply(row: store.ImportRow, existing, action: str):
     if action == "skipped":
         return existing
     if action == "created":
-        c = row.created_at if row.created_at is not None else 0
+        # Mirrors store.import_row: an undated row is stamped with the
+        # current time, not epoch 0 — otherwise a later duplicate with an
+        # old-but-real updated_at would look newer than this "created" row's
+        # timestamp and simulate as "updated" instead of "skipped".
+        c = row.created_at if row.created_at is not None else now
         u = row.updated_at if row.updated_at is not None else c
         return (None, row.body, row.kind or "fact", row.session_id, c, u)
     _, _body, kind, sid, c, _u = existing
@@ -107,7 +116,13 @@ def run_import(cfg: Config, path: Path, *, dry_run: bool, out=None) -> int:
     # sys.stdout per test after modules are already imported).
     out = sys.stdout if out is None else out
     path = Path(path)
-    if not path.is_file():
+    if not path.is_file() or not os.access(path, os.R_OK):
+        print(f"error: cannot read {path}", file=out)
+        return 2
+    try:
+        with open(path, "rb"):
+            pass
+    except OSError:
         print(f"error: cannot read {path}", file=out)
         return 2
     counts = {"created": 0, "updated": 0, "skipped": 0}
@@ -137,6 +152,7 @@ def run_import(cfg: Config, path: Path, *, dry_run: bool, out=None) -> int:
         # simulated row as existing and is "skipped", not double-counted as
         # "created").
         shadow: dict[tuple[str, str], tuple | None] = {}
+        now = int(time.time())
         for n, row, err in _read_rows(path):
             if err:
                 failures.append(f"line {n}: {err}")
@@ -145,7 +161,7 @@ def run_import(cfg: Config, path: Path, *, dry_run: bool, out=None) -> int:
             existing = shadow[key] if key in shadow else (None if conn is None else store._existing(conn, row.project, row.title))
             action = store._decide(row, existing)
             counts[action] += 1
-            shadow[key] = _simulate_apply(row, existing, action)
+            shadow[key] = _simulate_apply(row, existing, action, now)
         report()
         return 1 if failures else 0
 

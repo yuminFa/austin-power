@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import UTC, datetime
 
 import pytest
@@ -105,6 +106,24 @@ def test_dry_run_creates_nothing(tmp_path, capsys):
     assert "created 1" in capsys.readouterr().out and not c.db_path.exists()
 
 
+def test_dry_run_matches_real_import_for_undated_row_then_stale_update(tmp_path, capsys):
+    rows = [
+        {"title": "t", "body": "b"},  # undated: created on both dry-run and real import "now"
+        {"title": "t", "body": "old", "updated_at": 50},  # far in the past vs "now" -> skipped
+    ]
+    dry_path = write(tmp_path, rows)
+    c_dry = cfg(tmp_path)
+    assert importer.run_import(c_dry, dry_path, dry_run=True) == 0
+    dry_out = capsys.readouterr().out
+    assert "created 1, updated 0, skipped 1, failed 0" in dry_out
+
+    real_path = write(tmp_path, rows)
+    c_real = cfg(tmp_path)
+    assert importer.run_import(c_real, real_path, dry_run=False) == 0
+    real_out = capsys.readouterr().out
+    assert "created 1, updated 0, skipped 1, failed 0" in real_out
+
+
 def test_dry_run_simulates_duplicates_within_file(tmp_path, capsys):
     c = cfg(tmp_path)
     rows = [{"title": "t", "body": "b", "updated_at": 10}, {"title": "t", "body": "b", "updated_at": 10}]
@@ -116,6 +135,32 @@ def test_dry_run_simulates_duplicates_within_file(tmp_path, capsys):
 
 def test_missing_file(tmp_path):
     assert importer.run_import(cfg(tmp_path), tmp_path / "nope.jsonl", dry_run=False) == 2
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="permission bits meaningless as root / non-posix")
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_unreadable_import_file_errors_before_touching_home(tmp_path, capsys, dry_run):
+    p = tmp_path / "in.jsonl"
+    p.write_text('{"title":"t","body":"b"}\n')
+    p.chmod(0o000)
+    try:
+        c = cfg(tmp_path)
+        assert importer.run_import(c, p, dry_run=dry_run) == 2
+        out = capsys.readouterr().out
+        assert f"error: cannot read {p}" in out
+        assert not c.home.exists()
+    finally:
+        p.chmod(0o644)
+
+
+def test_ts_rejects_negative_float():
+    with pytest.raises(ValueError, match="created_at"):
+        importer.parse_line(json.dumps({"title": "t", "body": "b", "created_at": -0.1}))
+
+
+def test_ts_rejects_iso_just_before_epoch():
+    with pytest.raises(ValueError, match="created_at"):
+        importer.parse_line(json.dumps({"title": "t", "body": "b", "created_at": "1969-12-31T23:59:59.9Z"}))
 
 
 def test_unopenable_db_reports_error_not_traceback(tmp_path, capsys):

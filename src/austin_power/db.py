@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -50,10 +51,26 @@ def _stored_sig(conn) -> str | None:
     return row[0] if row else None
 
 
+def _mkdir_private(path: Path) -> None:
+    """mkdir(parents=True, exist_ok=True), but chmod 0700 only the directories
+    this call actually creates — a pre-existing ancestor's permissions (e.g. a
+    shared parent the caller doesn't own) are left untouched."""
+    created = []
+    p = path
+    while not p.exists():
+        created.append(p)
+        if p.parent == p:
+            break
+        p = p.parent
+    path.mkdir(parents=True, exist_ok=True)
+    if os.name == "posix":
+        for d in created:
+            os.chmod(d, 0o700)
+
+
 def open_db(path: Path, *, busy_timeout: int = 5000, rebuild_allowed: bool = True) -> apsw.Connection:
-    tokenizer.ensure_ready()
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _mkdir_private(path.parent)
     conn = apsw.Connection(str(path))
     tokenizer.register(conn)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -74,6 +91,10 @@ def open_db(path: Path, *, busy_timeout: int = 5000, rebuild_allowed: bool = Tru
                 raise TokenizerMismatchError(
                     f"tokenizer changed ({old} -> {sig}) while another austin-power server is running; restart the server"
                 )
+            # Only a real rebuild re-tokenizes existing rows and needs Kiwi
+            # actually running (spec §2.5.1: the worker spawns lazily on
+            # first use, not just because a DB was opened).
+            tokenizer.ensure_ready()
             n = conn.execute("SELECT count(*) FROM note").fetchone()[0]
             conn.execute("INSERT INTO note_fts(note_fts) VALUES('rebuild')")
             conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('tokenizer_sig', ?)", (sig,))
