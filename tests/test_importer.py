@@ -2,6 +2,7 @@ import json
 import os
 from datetime import UTC, datetime
 
+import apsw
 import pytest
 
 from austin_power import db, importer, store
@@ -175,6 +176,29 @@ def test_unopenable_db_reports_error_not_traceback(tmp_path, capsys):
         assert out.startswith("error: cannot open database ") and str(ro / "memory.db") in out
     finally:
         ro.chmod(0o700)
+
+
+def test_dry_run_corrupt_db_reports_error_not_traceback(tmp_path, capsys):
+    c = cfg(tmp_path)
+    c.db_path.parent.mkdir(parents=True, exist_ok=True)
+    c.db_path.write_bytes(os.urandom(4096))
+    p = write(tmp_path, [{"title": "t", "body": "b"}])
+    assert importer.run_import(c, p, dry_run=True) == 1
+    out = capsys.readouterr().out
+    assert out.startswith("error: cannot open database ") and str(c.db_path) in out
+
+
+def test_dry_run_uninitialized_schema_reports_error_not_traceback(tmp_path, capsys):
+    c = cfg(tmp_path)
+    c.db_path.parent.mkdir(parents=True, exist_ok=True)
+    # A valid but never-initialized (schema 0) sqlite file: no `note` table yet.
+    conn = apsw.Connection(str(c.db_path))
+    conn.close()
+    p = write(tmp_path, [{"title": "t", "body": "b"}])
+    assert importer.run_import(c, p, dry_run=True) == 1
+    out = capsys.readouterr().out
+    assert "Traceback" not in out
+    assert out.startswith("error: cannot open database ") and str(c.db_path) in out
 
 
 @pytest.mark.kiwi

@@ -146,6 +146,9 @@ def run_import(cfg: Config, path: Path, *, dry_run: bool, out=None) -> int:
         except db.SchemaTooNewError as e:
             print(f"error: {e}", file=out)
             return 1
+        except (apsw.Error, OSError) as e:
+            print(f"error: cannot open database {cfg.db_path}: {type(e).__name__}: {e}", file=out)
+            return 1
         # Simulate sequential upserts with a shadow dict so duplicate rows within
         # the same file count the way a real import would (e.g. two identical
         # rows on an empty DB: the first is "created", the second then sees that
@@ -153,15 +156,22 @@ def run_import(cfg: Config, path: Path, *, dry_run: bool, out=None) -> int:
         # "created").
         shadow: dict[tuple[str, str], tuple | None] = {}
         now = int(time.time())
-        for n, row, err in _read_rows(path):
-            if err:
-                failures.append(f"line {n}: {err}")
-                continue
-            key = (row.project, row.title)
-            existing = shadow[key] if key in shadow else (None if conn is None else store._existing(conn, row.project, row.title))
-            action = store._decide(row, existing)
-            counts[action] += 1
-            shadow[key] = _simulate_apply(row, existing, action, now)
+        try:
+            for n, row, err in _read_rows(path):
+                if err:
+                    failures.append(f"line {n}: {err}")
+                    continue
+                key = (row.project, row.title)
+                existing = shadow[key] if key in shadow else (None if conn is None else store._existing(conn, row.project, row.title))
+                action = store._decide(row, existing)
+                counts[action] += 1
+                shadow[key] = _simulate_apply(row, existing, action, now)
+        except apsw.Error as e:
+            # e.g. a schema-0 (never-initialized) DB has no `note` table yet:
+            # that's a real DB problem for dry-run to surface, not silently
+            # treated like the non-existent-DB "all would be created" case.
+            print(f"error: cannot open database {cfg.db_path}: {type(e).__name__}: {e}", file=out)
+            return 1
         report()
         return 1 if failures else 0
 
