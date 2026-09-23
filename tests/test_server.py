@@ -40,6 +40,26 @@ def tool(app, name, args):
     return r.json()["result"]
 
 
+async def _calls(app, requests):
+    hdrs = {**H, "Authorization": f"Bearer {TOKEN}"}
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:7760"
+    ) as c:
+        out = []
+        for name, args in requests:
+            r = await c.post("/mcp", json=rpc("tools/call", {"name": name, "arguments": args}), headers=hdrs)
+            assert r.status_code == 200, r.text
+            out.append(r.json()["result"])
+        return out
+
+
+def tools(app, requests):
+    """Run several tool calls under one shared lifespan/session (the streamable
+    HTTP session manager can only be entered once per app instance — see
+    test_call_without_initialize_roundtrip)."""
+    return anyio.run(_calls, app, requests)
+
+
 def test_unauthorized(app):
     r = anyio.run(call, app, rpc("tools/list"), H, False)
     assert r.status_code == 401 and "www-authenticate" not in r.headers
@@ -113,3 +133,60 @@ def test_validation_error_is_tool_error(app):
 def test_get_missing(app):
     res = tool(app, "get", {"id": 999})
     assert res["isError"] is True and "note 999 not found" in res["content"][0]["text"]
+
+
+@pytest.mark.parametrize("bad_id", [True, "1", 1.0])
+def test_forget_rejects_non_strict_id(app, bad_id):
+    save_res, forget_res, get_res = tools(
+        app,
+        [
+            ("save", {"title": "t", "body": "b"}),  # note id 1
+            ("forget", {"id": bad_id}),
+            ("get", {"id": 1}),
+        ],
+    )
+    assert forget_res["isError"] is True
+    # note 1 must survive: a coerced bool/str/float must never reach store.forget
+    assert get_res["isError"] is False and get_res["structuredContent"]["title"] == "t"
+
+
+def test_forget_accepts_plain_int(app):
+    _save_res, forget_res = tools(
+        app, [("save", {"title": "t", "body": "b"}), ("forget", {"id": 1})]
+    )
+    assert forget_res["isError"] is False and forget_res["structuredContent"]["deleted"] is True
+
+
+@pytest.mark.parametrize("bad_id", [True, "1", 1.0])
+def test_get_rejects_non_strict_id(app, bad_id):
+    _save_res, get_res = tools(
+        app, [("save", {"title": "t", "body": "b"}), ("get", {"id": bad_id})]
+    )
+    assert get_res["isError"] is True
+
+
+@pytest.mark.parametrize("bad_limit", [True, "1", 1.0])
+def test_search_rejects_non_strict_limit(app, bad_limit):
+    _save_res, search_res = tools(
+        app,
+        [
+            ("save", {"title": "배포", "body": "배포 절차를 정리했다"}),
+            ("search", {"query": "배포", "limit": bad_limit}),
+        ],
+    )
+    assert search_res["isError"] is True
+
+
+@pytest.mark.parametrize("bad_limit", [True, "1", 1.0])
+def test_recent_rejects_non_strict_limit(app, bad_limit):
+    _save_res, recent_res = tools(
+        app, [("save", {"title": "t", "body": "b"}), ("recent", {"limit": bad_limit})]
+    )
+    assert recent_res["isError"] is True
+
+
+def test_recent_accepts_plain_int_limit(app):
+    _save_res, recent_res = tools(
+        app, [("save", {"title": "t", "body": "b"}), ("recent", {"limit": 1})]
+    )
+    assert recent_res["isError"] is False and len(recent_res["structuredContent"]["results"]) == 1

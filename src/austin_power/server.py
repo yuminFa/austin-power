@@ -5,7 +5,7 @@ import logging
 import socket
 import threading
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Annotated, Any
 
 import anyio
 import anyio.to_thread
@@ -14,6 +14,7 @@ import uvicorn
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -21,6 +22,14 @@ from austin_power import __version__, auth, db, store, tokenizer
 from austin_power.config import Config, ConfigError, ensure_home, require_loopback
 
 log = logging.getLogger("austin_power.server")
+
+# Pydantic's default `int` coerces bool/str/float ({"id": true}, "1", 1.0) to a
+# plain int *before* store._id's own bool/type check ever runs, so a coerced
+# value could slip through to store.forget/get. `strict=True` rejects anything
+# that isn't already a Python int at the MCP boundary instead. Range checks
+# stay in store.py (_id, _limit) — this only closes the type-coercion gap.
+StrictId = Annotated[int, Field(strict=True)]
+StrictLimit = Annotated[int, Field(strict=True)]
 
 
 class _Bearer:
@@ -123,12 +132,12 @@ def build_app(conn: apsw.Connection, token: str, *, port: int):
         structured_output=True,
     )
     async def search(
-        query: str, project: str | None = None, kind: str | None = None, limit: int = 10
+        query: str, project: str | None = None, kind: str | None = None, limit: StrictLimit = 10
     ) -> dict[str, Any]:
         return await run(store.search, query, project=project, kind=kind, limit=limit)
 
     @srv.tool(description="Get one memory with its full body by id.", structured_output=True)
-    async def get(id: int) -> dict[str, Any]:
+    async def get(id: StrictId) -> dict[str, Any]:
         note = await run(store.get, id)
         if note is None:
             raise ToolError(f"note {id} not found")
@@ -139,12 +148,12 @@ def build_app(conn: apsw.Connection, token: str, *, port: int):
         structured_output=True,
     )
     async def recent(
-        project: str | None = None, kind: str | None = None, limit: int = 10
+        project: str | None = None, kind: str | None = None, limit: StrictLimit = 10
     ) -> dict[str, Any]:
         return {"results": await run(store.recent, project=project, kind=kind, limit=limit)}
 
     @srv.tool(description="Delete a memory by id.", structured_output=True)
-    async def forget(id: int) -> dict[str, Any]:
+    async def forget(id: StrictId) -> dict[str, Any]:
         return {"id": id, "deleted": await run(store.forget, id)}
 
     @srv.custom_route("/health", methods=["GET"])
