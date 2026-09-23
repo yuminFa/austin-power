@@ -118,6 +118,7 @@ Claude Code hook을 등록하려면 `austin-power setup hooks`가 출력하는 J
 | `AUSTIN_POWER_PORT` | `7760` | 서버 포트 |
 | `AUSTIN_POWER_INJECT_CHARS` | `4000` | SessionStart hook이 주입하는 컨텍스트 상한(자) |
 | `AUSTIN_POWER_LOG_LEVEL` | `INFO` | 서버 로그 레벨 |
+| `AUSTIN_POWER_KIWI_IDLE` | `600` | Kiwi 워커 프로세스의 유휴 종료 대기(초). `0`이면 유휴 종료하지 않음 |
 | `AUSTIN_POWER_PROJECT` | (없음) | hook의 project 자동 판별(git repo 이름)을 덮어씀 |
 | `AUSTIN_POWER_TOKEN` | (없음) | Codex 쪽에서만 읽는 환경변수 이름(서버는 읽지 않음) — `austin-power setup codex` 출력 참고 |
 

@@ -4,6 +4,7 @@ import errno
 import logging
 import socket
 import threading
+from contextlib import asynccontextmanager
 from typing import Any
 
 import anyio
@@ -16,7 +17,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from austin_power import __version__, auth, db, store
+from austin_power import __version__, auth, db, store, tokenizer
 from austin_power.config import Config, ConfigError, ensure_home, require_loopback
 
 log = logging.getLogger("austin_power.server")
@@ -49,6 +50,22 @@ class _Bearer:
         await self.app(scope, receive, send)
 
 
+def _with_tokenizer_shutdown(lifespan_context):
+    """Wrap a Starlette router's lifespan_context so tokenizer.shutdown()
+    (kills the kiwi worker child, if any) runs on ASGI shutdown, regardless
+    of what its `app` argument turns out to be."""
+
+    @asynccontextmanager
+    async def wrapped(app):
+        async with lifespan_context(app) as state:
+            try:
+                yield state
+            finally:
+                tokenizer.shutdown()
+
+    return wrapped
+
+
 def build_app(conn: apsw.Connection, token: str, *, port: int):
     """Build the ASGI app: MCP over `/mcp` (bearer-guarded) plus an open `/health`.
 
@@ -69,7 +86,7 @@ def build_app(conn: apsw.Connection, token: str, *, port: int):
             raise ToolError(str(e)) from None
         except apsw.BusyError:
             raise ToolError("storage busy, retry later") from None
-        except (apsw.Error, db.TokenizerMismatchError) as e:
+        except (apsw.Error, db.TokenizerMismatchError, tokenizer.WorkerError) as e:
             log.exception("storage error")
             raise ToolError(f"storage error: {type(e).__name__}") from None
 
@@ -140,6 +157,11 @@ def build_app(conn: apsw.Connection, token: str, *, port: int):
         json_response=True,
         transport_security=TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=[]),
     )
+    # uvicorn's SIGTERM handling runs the ASGI lifespan "shutdown" event
+    # before it re-raises the captured signal (see test_serve_lifecycle_and_
+    # second_instance_refused's comment) — hook the kiwi worker's shutdown
+    # there so `austin-power serve` never leaves an orphaned worker child.
+    app.router.lifespan_context = _with_tokenizer_shutdown(app.router.lifespan_context)
     wrapped = _Bearer(app, token)
     wrapped.router = app.router  # tests enter the lifespan via app.router.lifespan_context
     return wrapped
@@ -161,6 +183,7 @@ def serve(cfg: Config) -> int:
     if not lock.acquire():
         log.error("another austin-power server is already running for %s", cfg.home)
         return 1
+    tokenizer.set_backend("worker", idle_seconds=cfg.kiwi_idle)
     try:
         try:
             conn = db.open_db(cfg.db_path, rebuild_allowed=True)
@@ -185,4 +208,5 @@ def serve(cfg: Config) -> int:
         conn.close()
         return 0
     finally:
+        tokenizer.shutdown()
         lock.release()

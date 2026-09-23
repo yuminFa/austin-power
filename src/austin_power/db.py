@@ -8,15 +8,13 @@ from pathlib import Path
 import apsw
 
 from austin_power import tokenizer
+from austin_power.tokenizer import TokenizerMismatchError  # re-exported: db.TokenizerMismatchError
 
 log = logging.getLogger("austin_power.db")
 SCHEMA_VERSION = 1
 
 
 class SchemaTooNewError(RuntimeError): ...
-
-
-class TokenizerMismatchError(RuntimeError): ...
 
 
 SCHEMA = """
@@ -53,7 +51,7 @@ def _stored_sig(conn) -> str | None:
 
 
 def open_db(path: Path, *, busy_timeout: int = 5000, rebuild_allowed: bool = True) -> apsw.Connection:
-    tokenizer.get_kiwi()
+    tokenizer.ensure_ready()
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = apsw.Connection(str(path))
@@ -101,6 +99,7 @@ def open_db_readonly(path: Path) -> apsw.Connection | None:
 
 @contextmanager
 def write_txn(conn: apsw.Connection):
+    tokenizer.ensure_ready()
     conn.execute("BEGIN IMMEDIATE")
     try:
         if _stored_sig(conn) != tokenizer.signature():

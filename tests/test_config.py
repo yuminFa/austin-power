@@ -12,7 +12,17 @@ def test_defaults_under_xdg(tmp_path):
     assert cfg.token_path == cfg.home / "token"
     assert cfg.lock_path == cfg.home / "server.lock"
     assert (cfg.host, cfg.port, cfg.inject_chars) == ("127.0.0.1", 7760, 4000)
+    assert cfg.kiwi_idle == 600
     assert cfg.mcp_url == "http://127.0.0.1:7760/mcp"
+
+@pytest.mark.parametrize("idle", ["-1", "86401", "abc"])
+def test_bad_kiwi_idle(idle, tmp_path):
+    with pytest.raises(ConfigError):
+        load_config(env={"AUSTIN_POWER_HOME": str(tmp_path), "AUSTIN_POWER_KIWI_IDLE": idle})
+
+def test_kiwi_idle_env_override(tmp_path):
+    cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path), "AUSTIN_POWER_KIWI_IDLE": "0"})
+    assert cfg.kiwi_idle == 0
 
 def test_home_env_wins(tmp_path):
     cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h"), "XDG_CONFIG_HOME": "/nope"})

@@ -57,6 +57,7 @@ See the Korean README's "Claude Code / Codex에 등록하기" section for real, 
 | `AUSTIN_POWER_PORT` | `7760` | server port |
 | `AUSTIN_POWER_INJECT_CHARS` | `4000` | SessionStart injection cap (characters) |
 | `AUSTIN_POWER_LOG_LEVEL` | `INFO` | server log level |
+| `AUSTIN_POWER_KIWI_IDLE` | `600` | seconds of no requests before the Kiwi worker process unloads. `0` disables idle unload |
 | `AUSTIN_POWER_PROJECT` | (unset) | overrides hook project auto-detection |
 | `AUSTIN_POWER_TOKEN` | (unset) | read by Codex only, not by the server itself |
 

@@ -118,10 +118,6 @@ def _decide(row: ImportRow, existing) -> str:
     return "updated"
 
 
-def plan_import_row(conn, row: ImportRow) -> str:
-    return "created" if conn is None else _decide(row, _existing(conn, row.project, row.title))
-
-
 def import_row(conn, row: ImportRow) -> str:
     """Caller must hold db.write_txn. Row fields are already validated/normalized."""
     existing = _existing(conn, row.project, row.title)
@@ -156,6 +152,7 @@ def search(conn, query, *, project=None, kind=None, limit=10) -> dict:
     project = None if project is None else _text("project", project, 0, PROJECT_MAX)
     kind = None if kind is None else normalize_kind(kind)
     limit = _limit(limit)
+    tokenizer.ensure_ready()
     parts = [p for p in q.split() if tokenizer.query_tokens(p)]
     if not parts:
         return {"match": "none", "results": []}

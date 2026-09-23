@@ -10,6 +10,7 @@ APP = "austin-power"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 7760
 DEFAULT_INJECT_CHARS = 4000
+DEFAULT_KIWI_IDLE = 600
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 class ConfigError(ValueError):
@@ -25,6 +26,7 @@ class Config:
     port: int
     inject_chars: int
     log_level: str
+    kiwi_idle: int
 
     @property
     def base_url(self) -> str:
@@ -71,6 +73,7 @@ def load_config(*, host=None, port=None, env: Mapping[str, str] | None = None) -
         port=_int(port if port is not None else env.get("AUSTIN_POWER_PORT", DEFAULT_PORT), "port", 1, 65535),
         inject_chars=_int(env.get("AUSTIN_POWER_INJECT_CHARS", DEFAULT_INJECT_CHARS), "AUSTIN_POWER_INJECT_CHARS", 1, 1_000_000),
         log_level=env.get("AUSTIN_POWER_LOG_LEVEL", "INFO").upper(),
+        kiwi_idle=_int(env.get("AUSTIN_POWER_KIWI_IDLE", DEFAULT_KIWI_IDLE), "AUSTIN_POWER_KIWI_IDLE", 0, 86400),
     )
 
 def ensure_home(cfg: Config) -> None:
