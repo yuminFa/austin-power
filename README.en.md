@@ -81,8 +81,11 @@ So that repeated compactions don't pile up the same facts, the worker looks at e
    - a `new` whose title matches an existing one is treated as `update` (same title means overwrite);
    - if the merged body is shorter than 70% of the old body, it is dropped and the old body stays (shrink guard);
    - memories shown title-only (body too long) or whose titles differ only by whitespace are not update targets;
-   - memories containing credential-like values never have their body sent to the LLM (the whole row is omitted if the title contains one) and are not update targets.
+   - an update always keeps the existing `kind`;
+   - memories containing credential-like values (GitHub/AWS/Slack tokens, PEM private keys, etc.) never have their body sent to the LLM (the whole row is omitted if the title contains one) and are not update targets.
 4. Extractions for the same project are serialized with a per-project file lock, so two workers can't overwrite each other's merge.
+
+Note: because of step 1, existing memory bodies of the same project are sent to the extraction CLI's provider, just like session text. Secret detection only catches common patterns and is a mitigation, so don't store secrets in memories.
 
 Each run writes one line to `<home>/extract.log`:
 

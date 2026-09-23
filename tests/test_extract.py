@@ -1097,3 +1097,23 @@ def test_normalize_blocks_updates_to_secret_bearing_existing_rows():
     ]}
     items, dropped = extract.normalize(obj, existing)
     assert items == [] and dropped == 1
+
+
+def test_normalize_update_keeps_existing_kind():
+    existing = [{"kind": "gotcha", "title": "port clash", "body": "port 7760 clashes", "truncated": False}]
+    obj = {"memories": [
+        {"kind": "bug", "title": "port clash", "body": "port 7760 clashes; set AUSTIN_POWER_PORT", "action": "update"},
+    ]}
+    items, dropped = extract.normalize(obj, existing)
+    assert dropped == 0 and items[0]["kind"] == "gotcha" and items[0]["action"] == "update"
+
+
+@pytest.mark.parametrize("secret", [
+    "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8",
+    "github_pat_" + "11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz",
+    "AKIA" + "IOSFODNN7EXAMPLE",
+    "-----BEGIN " + "RSA PRIVATE KEY-----",
+    "xoxb-" + "123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx",
+])
+def test_has_secret_detects_common_credential_formats(secret):
+    assert extract._has_secret(f"value: {secret}")

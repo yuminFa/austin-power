@@ -47,6 +47,11 @@ SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
     re.compile(r"\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\b\s*[:=]\s*[\"']?[^\s\"']{10,}", re.IGNORECASE),
     re.compile(r"\bauthorization\s*:\s*bearer\s+\S{10,}", re.IGNORECASE),
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{30,}\b"),
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
 )
 
 _SCHEMA_OBJ = {
@@ -308,7 +313,7 @@ def normalize(obj, existing=()) -> tuple[list[dict], int]:
     if not isinstance(obj, dict) or not isinstance(obj.get("memories"), list):
         return [], 0
     rows = _classify_existing(existing)
-    eligible = {r["norm_title"]: (r["title"], r["body"]) for r in rows if not r["title_only"]}
+    eligible = {r["norm_title"]: (r["title"], r["body"], r["kind"]) for r in rows if not r["title_only"]}
     blocked = {r["norm_title"] for r in rows if r["title_only"]}
     out = []
     seen = set()
@@ -344,11 +349,13 @@ def normalize(obj, existing=()) -> tuple[list[dict], int]:
         elif action == "new" and norm_title in eligible:
             action = "update"
         if action == "update":
-            existing_title, existing_body = eligible[norm_title]
+            existing_title, existing_body, existing_kind = eligible[norm_title]
             if len(body) < SHRINK_RATIO * len(existing_body):
                 dropped += 1
                 continue
             final_title = existing_title
+            if isinstance(existing_kind, str) and existing_kind:
+                kind = existing_kind  # an update never reclassifies (kind-scoped retrieval keeps working)
         else:
             final_title = norm_title if len(norm_title) <= TITLE_MAX else norm_title[: TITLE_MAX - 1] + "…"
         if final_title in seen:
