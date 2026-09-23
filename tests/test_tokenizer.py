@@ -20,18 +20,31 @@ def test_colocated_only_when_indexing():
     assert analyze("note_fts", for_query=True) == [(0, 8, ("note_fts",))]
 
 def test_only_particles_yield_nothing():
-    # NOTE: a standalone "을 를" (particles with no host word) is dropped from
-    # this assertion on purpose. Root-caused (Codex check, 2026-09-23) against
-    # kiwipiepy==0.23.2 / kiwipiepy_model==0.23.0 across both the "cong" and
-    # "cong-global" model types: Kiwi tags each isolated particle as NNG (common
-    # noun) rather than a particle tag (JKO) when there is no surrounding word
-    # to disambiguate, so tokenizer._KEEP legitimately keeps them. A score- or
-    # blocklist-based patch to force this one input to [] was rejected: real
-    # short content words (e.g. tokenize("좋") -> VA, score -7.38) score in the
-    # same range as the garbage NNG readings here (-9.9 / -10.78), so such a
-    # heuristic would risk dropping legitimate query tokens in production.
     assert query_tokens("   ") == []
     assert query_tokens("") == []
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "spec §2.5 worked example ('을 를' -> 토큰 0개) is not met by "
+        "kiwipiepy==0.23.2 / kiwipiepy_model==0.23.0 (both 'cong' and "
+        "'cong-global' model types, root-caused via Codex check on "
+        "2026-09-23): with no host word for context, Kiwi tags each "
+        "isolated particle as NNG (common noun) instead of JKO, so "
+        "tokenizer._KEEP legitimately keeps them. A score- or "
+        "blocklist-based patch to force this input to [] was rejected: "
+        "real short content words (e.g. tokenize('좋') -> VA, score "
+        "-7.38) score in the same range as the garbage NNG readings here "
+        "(-9.9 / -10.78), so such a heuristic would risk dropping "
+        "legitimate query tokens in production. strict=True: once a "
+        "future kiwipiepy/model tags these correctly, this XPASSes and "
+        "fails the suite so the marker gets removed instead of silently "
+        "going stale. Plan-owner decision pending: amend the spec "
+        "example or accept this as the permanent record."
+    ),
+)
+def test_only_particles_yield_nothing_standalone_particle_pair():
+    assert query_tokens("을 를") == []
 
 def test_ascii_only_skips_kiwi_and_offsets_are_chars():
     assert analyze("Hello World-2", for_query=True) == [(0, 5, ("hello",)), (6, 13, ("world-2",))]
