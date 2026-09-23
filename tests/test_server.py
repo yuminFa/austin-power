@@ -137,7 +137,7 @@ def test_get_missing(app):
 
 @pytest.mark.parametrize("bad_id", [True, "1", 1.0])
 def test_forget_rejects_non_strict_id(app, bad_id):
-    save_res, forget_res, get_res = tools(
+    _save_res, forget_res, get_res = tools(
         app,
         [
             ("save", {"title": "t", "body": "b"}),  # note id 1

@@ -93,6 +93,11 @@ def _simulate_apply(row: store.ImportRow, existing, action: str, now: int):
     )
 
 
+def _report_open_error(e: Exception, db_path: Path, out) -> int:
+    print(f"error: cannot open database {db_path}: {type(e).__name__}: {e}", file=out)
+    return 1
+
+
 def _read_rows(path: Path):
     with open(path, "rb") as fh:
         for n, raw in enumerate(fh, 1):
@@ -147,8 +152,7 @@ def run_import(cfg: Config, path: Path, *, dry_run: bool, out=None) -> int:
             print(f"error: {e}", file=out)
             return 1
         except (apsw.Error, OSError) as e:
-            print(f"error: cannot open database {cfg.db_path}: {type(e).__name__}: {e}", file=out)
-            return 1
+            return _report_open_error(e, cfg.db_path, out)
         # Simulate sequential upserts with a shadow dict so duplicate rows within
         # the same file count the way a real import would (e.g. two identical
         # rows on an empty DB: the first is "created", the second then sees that
@@ -170,8 +174,7 @@ def run_import(cfg: Config, path: Path, *, dry_run: bool, out=None) -> int:
             # e.g. a schema-0 (never-initialized) DB has no `note` table yet:
             # that's a real DB problem for dry-run to surface, not silently
             # treated like the non-existent-DB "all would be created" case.
-            print(f"error: cannot open database {cfg.db_path}: {type(e).__name__}: {e}", file=out)
-            return 1
+            return _report_open_error(e, cfg.db_path, out)
         report()
         return 1 if failures else 0
 
@@ -185,8 +188,7 @@ def run_import(cfg: Config, path: Path, *, dry_run: bool, out=None) -> int:
             print(f"error: {e}", file=out)
             return 1
         except (apsw.Error, OSError) as e:
-            print(f"error: cannot open database {cfg.db_path}: {type(e).__name__}: {e}", file=out)
-            return 1
+            return _report_open_error(e, cfg.db_path, out)
         batch: list = []
 
         def flush():
