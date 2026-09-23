@@ -68,6 +68,13 @@ def _mkdir_private(path: Path) -> None:
             os.chmod(d, 0o700)
 
 
+def _needs_rebuild(conn: apsw.Connection, sig: str) -> bool:
+    """Unlocked peek; the decision is re-checked inside the write transaction."""
+    if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+        return False
+    return _stored_sig(conn) != sig
+
+
 def open_db(path: Path, *, busy_timeout: int = 5000, rebuild_allowed: bool = True) -> apsw.Connection:
     path = Path(path)
     _mkdir_private(path.parent)
@@ -77,6 +84,10 @@ def open_db(path: Path, *, busy_timeout: int = 5000, rebuild_allowed: bool = Tru
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.set_busy_timeout(busy_timeout)
     sig = tokenizer.signature()
+    if rebuild_allowed and _needs_rebuild(conn, sig):
+        # Start Kiwi before taking the write lock so a slow worker spawn
+        # cannot eat other writers' busy_timeout (spec §2.5.1).
+        tokenizer.ensure_ready()
     conn.execute("BEGIN IMMEDIATE")
     try:
         v = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -91,10 +102,6 @@ def open_db(path: Path, *, busy_timeout: int = 5000, rebuild_allowed: bool = Tru
                 raise TokenizerMismatchError(
                     f"tokenizer changed ({old} -> {sig}) while another austin-power server is running; restart the server"
                 )
-            # Only a real rebuild re-tokenizes existing rows and needs Kiwi
-            # actually running (spec §2.5.1: the worker spawns lazily on
-            # first use, not just because a DB was opened).
-            tokenizer.ensure_ready()
             n = conn.execute("SELECT count(*) FROM note").fetchone()[0]
             conn.execute("INSERT INTO note_fts(note_fts) VALUES('rebuild')")
             conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('tokenizer_sig', ?)", (sig,))

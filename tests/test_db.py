@@ -90,3 +90,28 @@ def test_second_lock_fails(tmp_path):
     a.release()
     assert b.acquire() is True
     b.release()
+
+
+def test_rebuild_prepares_tokenizer_outside_write_lock(tmp_path, monkeypatch):
+    """Worker startup for a signature rebuild must not hold SQLite's write lock (spec §2.5.1)."""
+    path = tmp_path / "m.db"
+    c = db.open_db(path)
+    c.execute("update meta set value='old' where key='tokenizer_sig'")
+    c.close()
+    seen = []
+
+    def probe():
+        other = apsw.Connection(str(path))
+        other.set_busy_timeout(0)
+        try:
+            other.execute("BEGIN IMMEDIATE")
+            other.execute("ROLLBACK")
+            seen.append("free")
+        except apsw.BusyError:
+            seen.append("locked")
+        finally:
+            other.close()
+
+    monkeypatch.setattr(tokenizer, "ensure_ready", probe)
+    db.open_db(path, rebuild_allowed=True).close()
+    assert seen and seen[0] == "free"
