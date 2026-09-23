@@ -237,3 +237,14 @@ def test_resolve_project(tmp_path):
     assert hook.resolve_project(str(tmp_path / "repo" / "sub"), {}) == "repo"
     assert hook.resolve_project(str(tmp_path), {}) == tmp_path.name
     assert hook.resolve_project("", {}) == ""
+
+def test_spawn_extract_never_raises_when_home_unwritable(tmp_path, monkeypatch, fake_popen):
+    from austin_power import config as config_mod
+    cfg = config_mod.load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h")})
+
+    def boom(_cfg):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(config_mod, "ensure_home", boom)
+    hook.spawn_extract(cfg, {}, {"source": "compact", "session_id": "s", "text": "x"})
+    assert fake_popen == []

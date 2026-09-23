@@ -71,13 +71,13 @@ def spawn_extract(cfg, env, job: dict) -> None:
     own import graph (no `austin_power.extract` import here)."""
     if extract_mode(env) == "off":
         return
-    config.ensure_home(cfg)
     jobs_dir = cfg.home / "jobs"
-    jobs_dir.mkdir(mode=0o700, exist_ok=True)
-    if os.name == "posix":
-        os.chmod(jobs_dir, 0o700)
     job_path = jobs_dir / f"{uuid.uuid4()}.json"
     try:
+        config.ensure_home(cfg)
+        jobs_dir.mkdir(mode=0o700, exist_ok=True)
+        if os.name == "posix":
+            os.chmod(jobs_dir, 0o700)
         fd = os.open(job_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             os.write(fd, json.dumps(job, ensure_ascii=False).encode())

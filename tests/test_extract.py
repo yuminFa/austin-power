@@ -568,3 +568,33 @@ def test_python_m_entry_point_runs_a_real_job(tmp_path):
     assert not job.exists()
     assert "skipped=short" in _read_log(tmp_path)
 
+
+
+@pytest.mark.kiwi
+def test_save_all_unreachable_midway_falls_back_for_rest_only(tmp_path, monkeypatch):
+    cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h")})
+    from austin_power import config as config_mod
+    config_mod.ensure_home(cfg)
+    cfg.token_path.write_text("tok")
+    seen = {"n": 0}
+
+    def fake_call_tool(cfg_, token, name, fields, timeout=5.0):
+        seen["n"] += 1
+        if seen["n"] >= 2:
+            raise hook.Unreachable("refused")
+        return {}
+
+    monkeypatch.setattr(hook, "call_tool", fake_call_tool)
+    items = [{"kind": "fact", "title": t, "body": "b"} for t in ("a", "c", "e")]
+    assert extract.save_all(cfg, items, "proj", "sess") == (3, 0)
+    conn = db.open_db(cfg.db_path)
+    assert [r[0] for r in conn.execute("select title from note order by title")] == ["c", "e"]
+
+
+def test_transcript_tail_streams_large_file_bounded(tmp_path):
+    p = tmp_path / "t.jsonl"
+    with p.open("w") as fh:
+        for i in range(3000):
+            fh.write(json.dumps({"type": "user", "message": {"content": f"msg {i} " + "x" * 200}}) + "\n")
+    out = extract.transcript_tail(p, max_chars=1000)
+    assert len(out) <= 1000 and "msg 2999" in out and "msg 0 " not in out

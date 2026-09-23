@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -59,59 +60,53 @@ _SYSTEM_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.D
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
-def transcript_tail(path, max_chars: int = MAX_CHARS) -> str:
-    try:
-        raw = Path(path).read_text(encoding="utf-8", errors="ignore")
-    except OSError:
+def _message_text(e) -> str:
+    if not isinstance(e, dict) or e.get("isSidechain") or e.get("isMeta") or e.get("isCompactSummary"):
         return ""
-    entries = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entries.append(json.loads(line))
-        except ValueError:
-            continue
-    boundary = -1
-    for i, e in enumerate(entries):
-        if isinstance(e, dict) and e.get("type") == "system" and e.get("subtype") == "compact_boundary":
-            boundary = i
-    if boundary >= 0:
-        entries = entries[boundary + 1:]
-    messages = []
-    for e in entries:
-        if not isinstance(e, dict):
-            continue
-        if e.get("isSidechain") or e.get("isMeta") or e.get("isCompactSummary"):
-            continue
-        msg = e.get("message")
-        msg = msg if isinstance(msg, dict) else {}
-        etype = e.get("type")
-        if etype == "user":
-            content = msg.get("content")
-            if isinstance(content, str):
-                text = content
-            elif isinstance(content, list):
-                text = "\n".join(
-                    b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
-                )
-            else:
-                continue
-            text = _SYSTEM_REMINDER_RE.sub("", text).strip()
-            if not text or text.startswith(("<command-", "<local-command-")):
-                continue
-            messages.append("[user]\n" + text)
-        elif etype == "assistant":
-            content = msg.get("content")
-            if not isinstance(content, list):
-                continue
-            text = "\n".join(
-                b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
-            ).strip()
-            if not text:
-                continue
-            messages.append("[assistant]\n" + text)
+    msg = e.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    etype = e.get("type")
+    if etype == "user":
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+        else:
+            return ""
+        text = _SYSTEM_REMINDER_RE.sub("", text).strip()
+        if not text or text.startswith(("<command-", "<local-command-")):
+            return ""
+        return "[user]\n" + text
+    if etype == "assistant" and isinstance(content, list):
+        text = "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text").strip()
+        return "[assistant]\n" + text if text else ""
+    return ""
+
+
+def transcript_tail(path, max_chars: int = MAX_CHARS) -> str:
+    # Stream line by line: a long session's JSONL can be large, so keep only the
+    # messages after the last compact_boundary, bounded to ~2x the output cap.
+    messages: deque[str] = deque()
+    total = 0
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(e, dict) and e.get("type") == "system" and e.get("subtype") == "compact_boundary":
+                    messages.clear(); total = 0
+                    continue
+                if m := _message_text(e):
+                    messages.append(m); total += len(m) + 2
+                    while len(messages) > 1 and total - len(messages[0]) - 2 >= 2 * max_chars:
+                        total -= len(messages.popleft()) + 2
+    except (OSError, TypeError, ValueError):
+        return ""
     selected = []
     used = 0
     for m in reversed(messages):
@@ -352,12 +347,13 @@ def save_all(cfg, items: list[dict], project: str, session_id: str) -> tuple[int
     except auth.TokenError:
         return _fallback_save_all(cfg, fields_list)
     saved = failed = 0
-    for fields in fields_list:
+    for i, fields in enumerate(fields_list):
         try:
             hook.call_tool(cfg, token, "save", fields, timeout=10)
             saved += 1
         except hook.Unreachable:
-            return _fallback_save_all(cfg, fields_list)
+            s2, f2 = _fallback_save_all(cfg, fields_list[i:])
+            return saved + s2, failed + f2
         except (hook.ServerError, TimeoutError):
             failed += 1
     return saved, failed
