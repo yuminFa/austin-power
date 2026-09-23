@@ -64,7 +64,8 @@ def _text(path: Path) -> str:
 
 def _run_cli(args, tmp_path, monkeypatch):
     monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
-    monkeypatch.delenv("AUSTIN_POWER_PORT", raising=False)
+    for var in ("AUSTIN_POWER_PORT", "AUSTIN_POWER_HOST", "AUSTIN_POWER_DB"):
+        monkeypatch.delenv(var, raising=False)
     code = main(args)
     return code
 
@@ -100,7 +101,7 @@ def test_readme_mentions_agentmemory_only_in_migration_section():
         assert m.start() >= migration_pos, "agentmemory mentioned outside the migration section"
 
 
-def test_readme_ko_tools_table_matches_server(readme_text=None):
+def test_readme_ko_tools_table_matches_server():
     text = _text(README_KO)
     src = (ROOT / "src" / "austin_power" / "server.py").read_text(encoding="utf-8")
     real_tools = re.findall(r"@srv\.tool\(.*?\n\s*async def (\w+)\(", src, re.DOTALL)
@@ -144,7 +145,7 @@ def test_readme_ko_license_and_design_link():
     assert "docs/design.md" in text
 
 
-@pytest.mark.parametrize("target,port", [("claude", "7799"), ("codex", None)])
+@pytest.mark.parametrize("target,port", [("claude", None), ("codex", None)])
 def test_readme_ko_setup_output_matches_real_cli(target, port, tmp_path, monkeypatch, capsys):
     args = ["setup", target] + (["--port", port] if port else [])
     code = _run_cli(args, tmp_path, monkeypatch)

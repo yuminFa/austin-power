@@ -11,9 +11,9 @@
 | 항목 | 기존 범용 메모리 서버 사용 경험 | austin-power |
 |---|---|---|
 | 상주 프로세스 | 세션마다 여러 개 (계층 4단) | 전역 HTTP 서버 **1개** |
-| 상주 메모리(RSS, 데이터 1MB 기준) | 약 550MB | (Task 9 측정 후 기입) |
-| 인덱스 방식 | 세대별 스냅샷 누적(654세대·6.8GB 관측) | SQLite FTS5, 증분 갱신 |
-| 재색인 | 세션마다 전체 재구축 | 트리거로 변경분만 갱신, 전체 재색인 없음 |
+| 상주 메모리(RSS, 데이터 1MB 기준) | 약 550MB | — |
+| 인덱스 방식 | 세대별 스냅샷 누적(654세대·6.8GB 관측, 재사용 없이 계속 쌓임) | SQLite FTS5, 증분 갱신 |
+| 재색인 | 전체 재구축이 세대로 계속 누적 | 트리거로 변경분만 갱신, 전체 재색인 없음 |
 | 한국어 검색 | 조사가 그대로 토큰이 되어 검색이 빗나감 | Kiwi 형태소 분석 + 식별자 원형 보존 |
 | 종료 | 부분 종료 불가 관측 | 단일 프로세스라 `kill`/`austin-power status` 로 상태 파악 |
 
@@ -50,8 +50,8 @@ austin-power serve
 `austin-power setup <target>`은 **출력만 하고 다른 도구의 설정 파일을 수정하지 않습니다.**
 
 ```sh
-$ austin-power setup claude --port 7799
-claude mcp add --transport http --scope user austin-power http://127.0.0.1:7799/mcp --header "Authorization: Bearer <TOKEN>"
+$ austin-power setup claude
+claude mcp add --transport http --scope user austin-power http://127.0.0.1:7760/mcp --header "Authorization: Bearer <TOKEN>"
 ```
 
 > ⚠️ 이 명령에는 토큰이 그대로 들어갑니다. 셸 히스토리에 남는 것이 걱정되면 `austin-power token`으로 값만 따로 확인하세요.
@@ -63,7 +63,7 @@ codex mcp add austin-power --url http://127.0.0.1:7760/mcp --bearer-token-env-va
 export AUSTIN_POWER_TOKEN="$(austin-power token)"
 ```
 
-Claude Code hook(아래 "도구 5개" 다음 절 참고)을 등록하려면 `austin-power setup hooks`가 출력하는 JSON을 `settings.json`의 `hooks`에 그대로 붙여넣습니다:
+Claude Code hook을 등록하려면 `austin-power setup hooks`가 출력하는 JSON을 `~/.claude/settings.json`(전역) 또는 프로젝트의 `.claude/settings.json` **최상위**에 병합합니다 — 출력에 `hooks` 키가 이미 들어 있으니 그 안에 한 번 더 감싸지 마세요:
 
 ```json
 {
