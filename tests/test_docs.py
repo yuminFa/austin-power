@@ -291,8 +291,11 @@ def test_readme_en_no_sessionend_limitation_gap():
 
 
 def test_readme_en_hooks_setup_mentions_sessionend():
+    """spec 2.10: `austin-power setup hooks` now registers SessionEnd too —
+    the `setup hooks` comment line must say so (not just any 'SessionEnd'
+    mention, since the old limitations bullet also named SessionEnd)."""
     text = _text(README_EN)
-    assert "SessionEnd" in text
+    assert "SessionStart/SessionEnd hook JSON" in text
 
 
 def test_readme_en_extraction_feature_bullet():
