@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from austin_power import config
+from austin_power import config, extract
 from austin_power.cli import HOOKS_SNIPPET, main
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +40,21 @@ ENV_VARS = [
     "AUSTIN_POWER_PROJECT",
     "AUSTIN_POWER_TOKEN",
 ]
+
+# spec 2.10 (austin-power-v0.2-llm-extraction-feature-spec.md): env vars the
+# LLM memory extraction feature adds, on top of ENV_VARS above.
+EXTRACT_ENV_VARS = [
+    "AUSTIN_POWER_EXTRACT",
+    "AUSTIN_POWER_CODEX_BIN",
+    "AUSTIN_POWER_CODEX_MODEL",
+    "AUSTIN_POWER_CLAUDE_BIN",
+    "AUSTIN_POWER_CLAUDE_MODEL",
+    "AUSTIN_POWER_EXTRACT_TIMEOUT",
+]
+
+# The exact bullet spec 2.10 says to remove from both READMEs' Limitations section.
+REMOVED_LIMITATION_KO = "SessionEnd 증류 없음"
+REMOVED_LIMITATION_EN = "No SessionEnd distillation"
 
 # Headings the Korean README must carry, in this order (spec Task 8 Step 1).
 SECTION_HEADINGS_KO = [
@@ -120,6 +135,55 @@ def test_readme_ko_config_table_matches_config_module():
     assert str(config.DEFAULT_INJECT_CHARS) in text
     assert "memory.db" in text
     assert "server.lock" in text
+
+
+def test_readme_ko_config_table_has_extraction_vars():
+    """spec 2.10: env table gains AUSTIN_POWER_EXTRACT(_*) rows."""
+    text = _text(README_KO)
+    for var in EXTRACT_ENV_VARS:
+        assert var in text, f"{var} missing from README config table"
+    assert str(extract.DEFAULT_TIMEOUT) in text
+    assert "sonnet" in text
+
+
+def test_readme_ko_no_sessionend_limitation_gap():
+    """spec 2.10: remove the 'SessionEnd distillation' limitation bullet — the
+    feature now exists, so the old gap no longer holds."""
+    text = _text(README_KO)
+    assert REMOVED_LIMITATION_KO not in text
+
+
+def test_readme_ko_hooks_json_includes_sessionend():
+    """spec 2.10: the hooks JSON example matches `austin-power setup hooks`,
+    which now registers SessionEnd (austin-power hook session-end, timeout 10)."""
+    text = _text(README_KO)
+    assert '"SessionEnd"' in text
+    assert "austin-power hook session-end" in text
+    hooks_section = text[text.find('"hooks": {') : text.find("## 도구 5개")]
+    assert '"timeout": 10' in hooks_section
+
+
+def test_readme_ko_extraction_feature_bullet():
+    """spec 2.10: the PostCompact feature bullet must describe summary-saved-
+    verbatim + background LLM extraction (up to 8 memories) on PostCompact and
+    SessionEnd, not the old 'no extra LLM call' framing alone."""
+    text = _text(README_KO)
+    assert "8개" in text
+    assert "SessionEnd" in text
+    assert "codex exec" in text
+    assert "claude -p" in text
+
+
+def test_readme_ko_extraction_privacy_and_cost_note():
+    """spec 2.10: a short privacy/cost note — session text goes to the codex/
+    claude CLI (their providers), 0-2 LLM calls per compact/session end,
+    disable via AUSTIN_POWER_EXTRACT=off, logged at <home>/extract.log with no
+    bodies. The server itself still never calls an LLM."""
+    text = _text(README_KO)
+    assert "AUSTIN_POWER_EXTRACT=off" in text
+    assert "extract.log" in text
+    assert "0~2" in text or "0-2" in text
+    assert "서버는 LLM을 호출하지 않는다" in text or "서버가 LLM을 호출하지 않" in text
 
 
 def test_readme_ko_install_and_repo_url():
@@ -210,6 +274,41 @@ def test_readme_en_exists_and_covers_the_essentials():
     assert "uv tool install git+https://github.com/yuminFa/austin-power" in text
     assert "docs/design.md" in text
     assert "MIT" in text
+
+
+def test_readme_en_config_table_has_extraction_vars():
+    """spec 2.10 (EN mirror of the Korean config-table test)."""
+    text = _text(README_EN)
+    for var in EXTRACT_ENV_VARS:
+        assert var in text, f"{var} missing from README.en.md config table"
+    assert str(extract.DEFAULT_TIMEOUT) in text
+    assert "sonnet" in text
+
+
+def test_readme_en_no_sessionend_limitation_gap():
+    text = _text(README_EN)
+    assert REMOVED_LIMITATION_EN not in text
+
+
+def test_readme_en_hooks_setup_mentions_sessionend():
+    text = _text(README_EN)
+    assert "SessionEnd" in text
+
+
+def test_readme_en_extraction_feature_bullet():
+    text = _text(README_EN)
+    assert "up to 8" in text
+    assert "SessionEnd" in text
+    assert "codex exec" in text
+    assert "claude -p" in text
+
+
+def test_readme_en_extraction_privacy_and_cost_note():
+    text = _text(README_EN)
+    assert "AUSTIN_POWER_EXTRACT=off" in text
+    assert "extract.log" in text
+    assert "0-2 LLM calls" in text
+    assert "never calls an LLM" in text
 
 
 # --- docs/design.md --------------------------------------------------------
