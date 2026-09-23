@@ -99,12 +99,23 @@ Claude Code hook을 등록하려면 `austin-power setup hooks`가 출력하는 J
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "austin-power hook session-end",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
 ```
 
-`PostCompact`는 세션 압축 요약을 자동 저장(증류)하고, `SessionStart`는 같은 프로젝트의 최근 기억을 세션 시작 컨텍스트에 주입합니다.
+`PostCompact`는 세션 압축 요약을 자동 저장(증류)하고, `SessionStart`는 같은 프로젝트의 최근 기억을 세션 시작 컨텍스트에 주입합니다. `PostCompact`와 `SessionEnd`는 그와 별개로 세션 텍스트를 외부 LLM CLI(`codex exec`, 부재·실패 시 `claude -p`)에 넘겨 재사용 가능한 기억(최대 8개)을 뽑아 각각 저장합니다 — 이때 세션 텍스트가 해당 CLI(각 제공자)로 전송됩니다. 백그라운드 워커가 처리하므로 hook 자체는 즉시 반환합니다. 세션 종료·compact마다 LLM 호출은 0~2회(입력이 200자 미만이거나 꺼져 있으면 0회, 보통 1회, codex 실패 후 claude로 폴백하면 2회 — 비용 발생 가능)입니다. `AUSTIN_POWER_EXTRACT=off`로 끌 수 있고, 로그는 `<home>/extract.log`에 남습니다(프롬프트·본문은 기록하지 않음).
 
 ## 도구 5개
 
@@ -131,6 +142,12 @@ Claude Code hook을 등록하려면 `austin-power setup hooks`가 출력하는 J
 | `AUSTIN_POWER_KIWI_IDLE` | `600` | Kiwi 워커 프로세스의 유휴 종료 대기(초). `0`이면 유휴 종료하지 않음 |
 | `AUSTIN_POWER_PROJECT` | (없음) | hook의 project 자동 판별(git repo 이름)을 덮어씀 |
 | `AUSTIN_POWER_TOKEN` | (없음) | Codex 쪽에서만 읽는 환경변수 이름(서버는 읽지 않음) — `austin-power setup codex` 출력 참고 |
+| `AUSTIN_POWER_EXTRACT` | `auto` | LLM 기억 추출 모드: `auto`(codex→claude 폴백)·`codex`·`claude`·`off` |
+| `AUSTIN_POWER_CODEX_BIN` | `codex` | 추출 1순위 백엔드 실행 파일 |
+| `AUSTIN_POWER_CODEX_MODEL` | (없음) | 지정 없으면 codex 내장 기본 모델 사용 |
+| `AUSTIN_POWER_CLAUDE_BIN` | `claude` | 추출 폴백 백엔드 실행 파일 |
+| `AUSTIN_POWER_CLAUDE_MODEL` | `sonnet` | |
+| `AUSTIN_POWER_EXTRACT_TIMEOUT` | `180` | 추출 백엔드 1회 호출 한도(초, 10~1800) |
 
 토큰 파일은 `<home>/token`, 서버 락 파일은 `<home>/server.lock`에 있습니다.
 
@@ -156,8 +173,7 @@ austin-power import am.jsonl
 ## 한계 (v0.1)
 
 - 로컬 전용(loopback 바인딩만, 원격 접속 불가)
-- SessionEnd 증류 없음(서버가 LLM을 호출하지 않아 요약을 만들 수단이 없음)
-- Windows 미검증
+- Windows 미검증(추출 워커는 POSIX `start_new_session`/`killpg`를 사용)
 
 ## 라이선스
 

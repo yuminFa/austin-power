@@ -6,12 +6,14 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 from austin_power import auth, config
 from austin_power.config import ConfigError, load_config
 
 SUMMARY_MAX, SUMMARY_KEEP = 32000, 31000
+EXTRACT_MODES = frozenset({"auto", "codex", "claude", "off"})
 
 class Unreachable(Exception): ...
 class ServerError(Exception): ...
@@ -58,6 +60,43 @@ def call_tool(cfg, token: str, name: str, args: dict, timeout: float = 5.0) -> d
     sc = result.get("structuredContent") or {}
     return sc["result"] if set(sc) == {"result"} and isinstance(sc["result"], dict) else sc
 
+def extract_mode(env) -> str:
+    v = (env.get("AUSTIN_POWER_EXTRACT") or "auto").strip().lower()
+    return v if v in EXTRACT_MODES else "auto"
+
+def spawn_extract(cfg, env, job: dict) -> None:
+    """Fire-and-forget: write the job file and launch the extract worker.
+
+    Never raises, never waits for the worker, and stays out of extract.py's
+    own import graph (no `austin_power.extract` import here)."""
+    if extract_mode(env) == "off":
+        return
+    config.ensure_home(cfg)
+    jobs_dir = cfg.home / "jobs"
+    jobs_dir.mkdir(mode=0o700, exist_ok=True)
+    if os.name == "posix":
+        os.chmod(jobs_dir, 0o700)
+    job_path = jobs_dir / f"{uuid.uuid4()}.json"
+    try:
+        fd = os.open(job_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, json.dumps(job, ensure_ascii=False).encode())
+        finally:
+            os.close(fd)
+    except OSError as e:
+        print(f"austin-power: could not write extract job: {e}", file=sys.stderr)
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "austin_power.extract", str(job_path)],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True, env={**env, "AUSTIN_POWER_EXTRACTOR_CHILD": "1"},
+        )
+    except OSError as e:
+        job_path.unlink(missing_ok=True)
+        print(f"austin-power: could not spawn extract worker: {e}", file=sys.stderr)
+
 def _fallback_save(cfg, fields: dict, err) -> None:
     from austin_power import db, store  # heavy imports only here
     # Create (or fix up) the home directory with 0700 *before* acquiring the
@@ -92,22 +131,35 @@ def _post_compact(data: dict, cfg, env, out, err) -> None:
     sid = data.get("session_id")
     if not isinstance(summary, str) or not summary.strip() or not isinstance(sid, str) or not sid:
         return
+    original_summary = summary
+    cwd = data.get("cwd") or ""
     if len(summary) > SUMMARY_MAX:
         summary = summary[:SUMMARY_KEEP] + "\n…(truncated)"
     fields = {"title": "session " + sid[:180], "body": summary, "kind": "session",
-              "project": resolve_project(data.get("cwd") or "", env), "session_id": sid[:200]}
+              "project": resolve_project(cwd, env), "session_id": sid[:200]}
     try:
         token = auth.read_token(cfg.token_path)
     except auth.TokenError:
-        _fallback_save(cfg, fields, err); return
-    try:
-        call_tool(cfg, token, "save", fields)
-    except Unreachable:
         _fallback_save(cfg, fields, err)
-    except TimeoutError:
-        print("austin-power: server timed out; summary not saved", file=err)
-    except ServerError as e:
-        print(f"austin-power: save failed: {e}", file=err)
+    else:
+        try:
+            call_tool(cfg, token, "save", fields)
+        except Unreachable:
+            _fallback_save(cfg, fields, err)
+        except TimeoutError:
+            print("austin-power: server timed out; summary not saved", file=err)
+        except ServerError as e:
+            print(f"austin-power: save failed: {e}", file=err)
+    # Regardless of whether the summary itself was saved, hand the *original*
+    # (untruncated) text to the extract worker — it applies its own tail cap.
+    spawn_extract(cfg, env, {"source": "compact", "session_id": sid, "cwd": cwd, "text": original_summary})
+
+def _session_end(data: dict, cfg, env, out, err) -> None:
+    sid = data.get("session_id")
+    path = data.get("transcript_path")
+    if not isinstance(sid, str) or not sid or not isinstance(path, str) or not path:
+        return
+    spawn_extract(cfg, env, {"source": "session-end", "session_id": sid, "cwd": data.get("cwd") or "", "transcript_path": path})
 
 def _session_start(data: dict, cfg, env, out, err) -> None:
     if data.get("source") == "compact":
@@ -124,9 +176,13 @@ def _session_start(data: dict, cfg, env, out, err) -> None:
     if text:
         out.write(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}, ensure_ascii=False))
 
+_HANDLERS = {"post-compact": _post_compact, "session-end": _session_end}
+
 def main(event: str, *, stdin=None, stdout=None, stderr=None, env=None) -> int:
     stdin, stdout, stderr = stdin or sys.stdin, stdout or sys.stdout, stderr or sys.stderr
     env = os.environ if env is None else env
+    if env.get("AUSTIN_POWER_EXTRACTOR_CHILD") == "1":
+        return 0  # recursion guard: never re-enter from the worker or its LLM child
     try:
         data = json.loads(stdin.read() or "null")
         if not isinstance(data, dict):
@@ -134,7 +190,7 @@ def main(event: str, *, stdin=None, stdout=None, stderr=None, env=None) -> int:
         if not isinstance(data.get("cwd", ""), str):
             raise ValueError("cwd must be a string")  # noqa: TRY004
         cfg = load_config(env=env)
-        (_post_compact if event == "post-compact" else _session_start)(data, cfg, env, stdout, stderr)
+        _HANDLERS.get(event, _session_start)(data, cfg, env, stdout, stderr)
     except (ValueError, ConfigError) as e:
         print(f"austin-power hook: ignored invalid input: {e}", file=stderr)
     except Exception as e:  # noqa: BLE001 - fail-open: never break the user's session

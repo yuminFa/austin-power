@@ -73,6 +73,19 @@ def test_setup_hooks_is_valid_json(tmp_path, capsys, monkeypatch):
     hooks = json.loads(out.out)["hooks"]
     assert hooks["PostCompact"][0]["hooks"][0]["command"] == "austin-power hook post-compact"
     assert hooks["SessionStart"][0]["hooks"][0]["command"] == "austin-power hook session-start"
+    assert hooks["SessionEnd"][0]["hooks"][0]["command"] == "austin-power hook session-end"
+    assert hooks["SessionEnd"][0]["hooks"][0]["timeout"] == 10
+
+
+def test_hook_accepts_session_end_event(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO("{}"))
+    assert main(["hook", "session-end"]) == 0
+
+
+def test_hook_rejects_unknown_event(tmp_path, capsys, monkeypatch):
+    code, _out = run(["hook", "bogus"], tmp_path, capsys, monkeypatch)
+    assert code == 2
 
 
 def test_setup_rejects_non_loopback(tmp_path, capsys, monkeypatch):

@@ -25,6 +25,7 @@ Kiwi's model (~400MB) doesn't live in the server process — it's loaded only in
 - Kiwi morphological analysis + identifier preservation — Korean particles/endings are stripped, but code identifiers like `note_fts` still match on their exact form.
 - The server never calls an LLM — search/save are plain SQL; summaries are produced by the client (Claude Code) and merely stored.
 - PostCompact auto-save — the compaction summary Claude Code already produced is saved as a session memory, with zero extra LLM calls.
+- PostCompact and SessionEnd also spawn a background worker that sends session text to an external LLM CLI (`codex exec`, falling back to `claude -p` if codex is absent or fails) to distill up to 8 reusable memories. This is separate from the server, which still never calls an LLM. 0-2 LLM calls per session end/compact (0 if the input is under 200 chars or extraction is off, usually 1, 2 if codex fails and claude is tried — this can cost money). Disable with `AUSTIN_POWER_EXTRACT=off`; logs go to `<home>/extract.log` (never the prompt or memory bodies).
 
 ## Install & run
 
@@ -42,7 +43,7 @@ austin-power serve
 ```sh
 austin-power setup claude   # -> claude mcp add ...
 austin-power setup codex    # -> codex mcp add ...
-austin-power setup hooks    # -> Claude Code PostCompact/SessionStart hook JSON
+austin-power setup hooks    # -> Claude Code PostCompact/SessionStart/SessionEnd hook JSON
 ```
 
 See the Korean README's "Claude Code / Codex에 등록하기" section for real, byte-for-byte output.
@@ -70,6 +71,12 @@ See the Korean README's "Claude Code / Codex에 등록하기" section for real, 
 | `AUSTIN_POWER_KIWI_IDLE` | `600` | seconds of no requests before the Kiwi worker process unloads. `0` disables idle unload |
 | `AUSTIN_POWER_PROJECT` | (unset) | overrides hook project auto-detection |
 | `AUSTIN_POWER_TOKEN` | (unset) | read by Codex only, not by the server itself |
+| `AUSTIN_POWER_EXTRACT` | `auto` | memory-extraction mode: `auto` (codex→claude fallback), `codex`, `claude`, `off` |
+| `AUSTIN_POWER_CODEX_BIN` | `codex` | primary extraction backend executable |
+| `AUSTIN_POWER_CODEX_MODEL` | (unset) | falls back to codex's own default model when unset |
+| `AUSTIN_POWER_CLAUDE_BIN` | `claude` | fallback extraction backend executable |
+| `AUSTIN_POWER_CLAUDE_MODEL` | `sonnet` | |
+| `AUSTIN_POWER_EXTRACT_TIMEOUT` | `180` | per-backend call timeout, seconds (10-1800) |
 
 ## Data & backup
 
@@ -87,8 +94,7 @@ Session compaction summaries (`mem%3Asummaries.bin`) are converted too (disable 
 ## Limitations (v0.1)
 
 - Local only (loopback bind, no remote access)
-- No SessionEnd distillation (the server never calls an LLM, so it has no way to produce a summary)
-- Windows untested
+- Windows untested (the extraction worker uses POSIX `start_new_session`/`killpg`)
 
 ## License
 

@@ -13,6 +13,7 @@ HOOKS_SNIPPET = {
     "hooks": {
         "PostCompact": [{"hooks": [{"type": "command", "command": "austin-power hook post-compact", "timeout": 30}]}],
         "SessionStart": [{"hooks": [{"type": "command", "command": "austin-power hook session-start", "timeout": 10}]}],
+        "SessionEnd": [{"hooks": [{"type": "command", "command": "austin-power hook session-end", "timeout": 10}]}],
     }
 }
 
@@ -39,7 +40,7 @@ def _parser() -> argparse.ArgumentParser:
     i.add_argument("file")
     i.add_argument("--dry-run", action="store_true")
     h = sub.add_parser("hook", help="Claude Code hook entry points (read JSON on stdin)")
-    h.add_argument("event", choices=["post-compact", "session-start"])
+    h.add_argument("event", choices=["post-compact", "session-start", "session-end"])
     return p
 
 
