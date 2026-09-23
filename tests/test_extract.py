@@ -1,6 +1,7 @@
 import json
 import os
 import stat
+import subprocess
 import sys
 import time
 
@@ -390,6 +391,7 @@ def test_save_all_fallback_when_no_token(tmp_path):
     assert conn.execute("select count(*) from note").fetchone()[0] == 1
 
 
+@pytest.mark.kiwi
 def test_save_all_fallback_when_unreachable(tmp_path, monkeypatch):
     cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h")})
     from austin_power import config as config_mod
@@ -449,7 +451,6 @@ def _read_log(tmp_path):
 
 def test_main_short_text_is_skipped(tmp_path, monkeypatch):
     monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
-    monkeypatch.setenv("AUSTIN_POWER_EXTRACT", "off")
     job = _write_job(tmp_path, {"source": "compact", "session_id": "abc12345", "cwd": "", "text": "too short"})
     assert extract.main([str(job)]) == 0
     assert not job.exists()
@@ -483,9 +484,11 @@ def test_main_off_mode_records_no_backend_call(tmp_path, monkeypatch):
     job = _write_job(tmp_path, {"source": "compact", "session_id": "abc", "cwd": "", "text": "x" * 250})
     assert extract.main([str(job)]) == 0
     log = _read_log(tmp_path)
-    assert "backend=none" in log and "saved=0" in log and "failed=0" in log
+    assert "skipped=off" in log
+    assert not job.exists()
 
 
+@pytest.mark.kiwi
 def test_main_end_to_end_saves_via_fallback(tmp_path, monkeypatch):
     monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
     codex_bin = codex_script(tmp_path, "c", memories=[{"kind": "fact", "title": "learned x", "body": "y" * 10}])
@@ -499,6 +502,7 @@ def test_main_end_to_end_saves_via_fallback(tmp_path, monkeypatch):
     assert conn.execute("select title, kind from note").fetchone() == ("learned x", "fact")
 
 
+@pytest.mark.kiwi
 def test_main_never_logs_body_or_prompt(tmp_path, monkeypatch):
     monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
     codex_bin = codex_script(tmp_path, "c", memories=[{"kind": "fact", "title": "UNIQUE_TITLE_X", "body": "UNIQUE_BODY_Y" * 5}])
@@ -552,4 +556,15 @@ def test_main_bad_mode_and_timeout_env_use_defaults(tmp_path, monkeypatch):
     log = _read_log(tmp_path)
     assert "backend=codex" in log  # bogus mode fell back to "auto" and still ran codex
     assert "badmode=" in log and "badtimeout=" in log
+
+
+def test_python_m_entry_point_runs_a_real_job(tmp_path):
+    """The actual hook->worker seam: `python -m austin_power.extract <job>`, not main() in-process."""
+    job = _write_job(tmp_path, {"source": "compact", "session_id": "s", "cwd": "", "text": "too short"})
+    env = {**os.environ, "AUSTIN_POWER_HOME": str(tmp_path / "h")}
+    r = subprocess.run([sys.executable, "-m", "austin_power.extract", str(job)],
+                        capture_output=True, text=True, env=env, check=False, timeout=10)
+    assert r.returncode == 0
+    assert not job.exists()
+    assert "skipped=short" in _read_log(tmp_path)
 

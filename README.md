@@ -34,6 +34,7 @@ Kiwi 모델(~400MB)은 서버 프로세스에 상주하지 않고 별도 자식 
 - Kiwi 형태소 분석 + 식별자 원형 보존 — 한국어 조사/어미는 제거하고, `note_fts` 같은 코드 식별자는 원형 그대로 검색된다.
 - 서버는 LLM을 호출하지 않는다 — 검색·저장은 순수 SQL, 요약도 클라이언트(Claude Code)가 이미 만든 것을 받아 저장할 뿐이다.
 - 세션 압축(PostCompact) 시 요약을 자동 저장 — 추가 LLM 호출 없이 세션 기억이 쌓인다.
+- PostCompact·SessionEnd는 이와 별개로 백그라운드 워커를 띄워 세션 텍스트를 외부 LLM CLI(codex/claude)에 넘겨 재사용 가능한 기억을 추가로 뽑는다 — 이 경로는 LLM을 호출하며 `AUSTIN_POWER_EXTRACT=off`로 끌 수 있다(자세한 내용은 아래 "Claude Code / Codex에 등록하기" 참고).
 
 ## 한국어 검색 예시
 

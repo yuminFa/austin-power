@@ -185,10 +185,12 @@ def test_post_compact_spawns_extract_job_when_server_down(tmp_path, monkeypatch,
     assert (tmp_path / "h" / "memory.db").exists()
 
 # C3: AUSTIN_POWER_EXTRACT=off -> no spawn for either event.
+@pytest.mark.kiwi
 def test_extract_off_skips_spawn_post_compact(tmp_path, monkeypatch, fake_popen):
-    p = {"session_id": "abc", "cwd": str(tmp_path), "compact_summary": ""}
+    p = {"session_id": "abc", "cwd": str(tmp_path), "compact_summary": "x" * 250}
     run("post-compact", p, tmp_path, monkeypatch, extra_env={"AUSTIN_POWER_EXTRACT": "off"})
     assert fake_popen == [] and _job_files(tmp_path) == []
+    assert (tmp_path / "h" / "memory.db").exists()  # the summary itself is still saved
 
 def test_extract_off_skips_spawn_session_end(tmp_path, monkeypatch, fake_popen):
     p = {"session_id": "abc", "cwd": str(tmp_path), "transcript_path": str(tmp_path / "t.jsonl")}
