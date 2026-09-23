@@ -25,7 +25,7 @@ Kiwi's model (~400MB) doesn't live in the server process — it's loaded only in
 - Kiwi morphological analysis + identifier preservation — Korean particles/endings are stripped, but code identifiers like `note_fts` still match on their exact form.
 - The server never calls an LLM — search/save are plain SQL; summaries are produced by the client (Claude Code) and merely stored.
 - PostCompact auto-save — the compaction summary Claude Code already produced is saved as a session memory, with zero extra LLM calls.
-- PostCompact and SessionEnd also spawn a background worker that sends session text to an external LLM CLI (`codex exec`, falling back to `claude -p` if codex is absent or fails) to distill up to 8 reusable memories. This is separate from the server, which still never calls an LLM. 0-2 LLM calls per session end/compact (0 if the input is under 200 chars or extraction is off, usually 1, 2 if codex fails and claude is tried — this can cost money). Disable with `AUSTIN_POWER_EXTRACT=off`; logs go to `<home>/extract.log` (never the prompt or memory bodies). Before extracting, the worker reads the project's recent memories straight from the local DB and feeds them into the prompt, so the LLM updates an existing memory instead of duplicating overlapping content; a shrink guard discards the update and keeps the old body if the merged body would come out much shorter. Concurrent extractions for the same project are serialized with a per-project file lock, so two workers can't read the same existing body and overwrite each other's merge.
+- PostCompact and SessionEnd also spawn a background worker that sends session text to an external LLM CLI (`codex exec`, falling back to `claude -p` if codex is absent or fails) to distill up to 8 reusable memories. This is separate from the server, which still never calls an LLM. 0-2 LLM calls per session end/compact (0 if the input is under 200 chars or extraction is off, usually 1, 2 if codex fails and claude is tried — this can cost money). Disable with `AUSTIN_POWER_EXTRACT=off`; logs go to `<home>/extract.log` (never the prompt or memory bodies). Existing memories are checked first to avoid duplicates — see "Automatic extraction and dedup" below.
 
 ## Install & run
 
@@ -66,6 +66,38 @@ Codex CLI supports its own hook events (`PreCompact`, `SessionEnd`, etc.), separ
 ```
 
 `pre-compact` is never registered with Claude Code (Claude uses `PostCompact`'s own summary instead) — it's Codex-only, and hands the worker the Codex rollout transcript just before compaction so it can be parsed per §2.12. Both the current Codex rollout shape (`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage"|"AgentMessage",...}}}`, with `{"type":"compacted"}` as the compaction boundary) and the legacy shape (`payload.type` of `user_message`/`agent_message`) are auto-detected.
+
+### Automatic extraction and dedup
+
+So that repeated compactions don't pile up the same facts, the worker looks at existing memories before extracting.
+
+1. It reads up to 50 recent memories of the same project (excluding `kind=session`) from the local DB, read-only, and puts them in the prompt.
+2. The LLM picks an `action` per item:
+   - already known → not returned (skip)
+   - refines an existing memory → `update`: the exact existing title, with a body merging old and new content
+   - new fact → `new`: a new title
+3. The worker re-checks the result:
+   - an `update` whose title doesn't match an existing one is saved as `new`;
+   - a `new` whose title matches an existing one is treated as `update` (same title means overwrite);
+   - if the merged body is shorter than 70% of the old body, it is dropped and the old body stays (shrink guard);
+   - memories shown title-only (body too long) or whose titles differ only by whitespace are not update targets;
+   - memories containing credential-like values never have their body sent to the LLM (the whole row is omitted if the title contains one) and are not update targets.
+4. Extractions for the same project are serialized with a per-project file lock, so two workers can't overwrite each other's merge.
+
+Each run writes one line to `<home>/extract.log`:
+
+```
+2026-09-23T14:26:08Z source=compact session=1a2b3c4d backend=codex saved=2 failed=0 updated=1 dropped=0
+```
+
+| Field | Meaning |
+|---|---|
+| `saved` | memories written (new + updated) |
+| `updated` | of those, existing memories updated in place |
+| `dropped` | discarded (e.g. by the shrink guard) |
+| `skipped=short\|off\|busy\|badjob` | input too short / extraction off / timed out waiting for the project lock / malformed job file |
+
+Limits: older memories outside the recent 50 and similar memories with different titles are left to the LLM's judgment, so some duplicates can remain. Existing duplicates are not cleaned up automatically (remove them with `forget`).
 
 ## Tools
 

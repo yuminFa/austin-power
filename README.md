@@ -116,7 +116,7 @@ Claude Code hook을 등록하려면 `austin-power setup hooks`가 출력하는 J
 }
 ```
 
-`PostCompact`는 세션 압축 요약을 자동 저장(증류)하고, `SessionStart`는 같은 프로젝트의 최근 기억을 세션 시작 컨텍스트에 주입합니다. `PostCompact`와 `SessionEnd`는 그와 별개로 세션 텍스트를 외부 LLM CLI(`codex exec`, 부재·실패 시 `claude -p`)에 넘겨 재사용 가능한 기억(최대 8개)을 뽑아 각각 저장합니다 — 이때 세션 텍스트가 해당 CLI(각 제공자)로 전송됩니다. 백그라운드 워커가 처리하므로 hook 자체는 즉시 반환합니다. 세션 종료·compact마다 LLM 호출은 0~2회(입력이 200자 미만이거나 꺼져 있으면 0회, 보통 1회, codex 실패 후 claude로 폴백하면 2회 — 비용 발생 가능)입니다. `AUSTIN_POWER_EXTRACT=off`로 끌 수 있고, 로그는 `<home>/extract.log`에 남습니다(프롬프트·본문은 기록하지 않음). 워커는 추출 전에 같은 프로젝트의 최근 기억을 로컬 DB에서 직접 읽어 프롬프트에 넣으므로, LLM이 겹치는 내용을 새로 만들지 않고 기존 기억을 업데이트할 수 있습니다. 병합된 본문이 기존보다 훨씬 짧아지면(shrink guard) 갱신을 버리고 기존 본문을 그대로 유지합니다. 같은 프로젝트에 대한 동시 추출은 프로젝트별 파일 락으로 직렬화되어, 두 워커가 같은 기존 본문을 읽고 서로의 병합 결과를 덮어쓰는 일이 없습니다.
+`PostCompact`는 세션 압축 요약을 자동 저장(증류)하고, `SessionStart`는 같은 프로젝트의 최근 기억을 세션 시작 컨텍스트에 주입합니다. `PostCompact`와 `SessionEnd`는 그와 별개로 세션 텍스트를 외부 LLM CLI(`codex exec`, 부재·실패 시 `claude -p`)에 넘겨 재사용 가능한 기억(최대 8개)을 뽑아 각각 저장합니다 — 이때 세션 텍스트가 해당 CLI(각 제공자)로 전송됩니다. 백그라운드 워커가 처리하므로 hook 자체는 즉시 반환합니다. 세션 종료·compact마다 LLM 호출은 0~2회(입력이 200자 미만이거나 꺼져 있으면 0회, 보통 1회, codex 실패 후 claude로 폴백하면 2회 — 비용 발생 가능)입니다. `AUSTIN_POWER_EXTRACT=off`로 끌 수 있고, 로그는 `<home>/extract.log`에 남습니다(프롬프트·본문은 기록하지 않음). 중복 방지 방식은 아래 "자동 기억 추출과 중복 방지"를 참고하세요.
 
 ### Codex CLI hook 등록
 
@@ -136,6 +136,38 @@ Codex CLI도 자체 hook 이벤트(`PreCompact`·`SessionEnd` 등)를 지원합�
 ```
 
 `pre-compact`는 Claude Code에는 등록하지 않습니다(Claude는 `PostCompact`의 요약을 그대로 씁니다) — Codex 전용 이벤트로, 압축 직전 시점의 Codex rollout transcript를 워커에 넘겨 §2.12 규칙대로 파싱합니다. Codex rollout(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage"|"AgentMessage",...}}}`, 압축 경계 `{"type":"compacted"}`)과 옛 형식(`payload.type` 이 `user_message`/`agent_message`) 모두 자동 인식합니다.
+
+### 자동 기억 추출과 중복 방지
+
+compact를 여러 번 해도 같은 사실이 계속 새로 쌓이지 않도록, 워커는 추출 전에 기존 기억을 먼저 봅니다.
+
+1. 같은 프로젝트의 최근 기억 최대 50개(`kind=session` 제외)를 로컬 DB에서 읽기 전용으로 읽어 프롬프트에 넣습니다.
+2. LLM은 항목마다 `action`을 고릅니다.
+   - 이미 있는 사실 → 반환하지 않음(skip)
+   - 기존 기억을 보완 → `update`: 기존 제목 그대로, 기존 내용과 새 내용을 합친 본문
+   - 새 사실 → `new`: 새 제목
+3. 워커가 결과를 한 번 더 검사합니다.
+   - `update`인데 기존 제목과 다르면 `new`로 저장합니다.
+   - `new`인데 기존 제목과 같으면 `update`로 봅니다(같은 제목은 덮어쓰기이므로).
+   - 합친 본문이 기존 본문의 70%보다 짧으면 저장하지 않고 기존 본문을 유지합니다(shrink guard).
+   - 본문이 길어 프롬프트에 제목만 들어간 기억, 공백만 다른 제목이 여럿인 기억은 갱신 대상에서 뺍니다.
+   - 토큰·비밀번호처럼 보이는 값이 든 기억은 본문을 LLM에 보내지 않고(제목에 들어 있으면 항목째 제외) 갱신 대상에서도 뺍니다.
+4. 같은 프로젝트의 추출은 프로젝트별 파일 락으로 한 번에 하나씩 돌아, 두 워커가 서로의 병합을 덮어쓰지 않습니다.
+
+`<home>/extract.log`의 한 줄이 결과를 요약합니다.
+
+```
+2026-09-23T14:26:08Z source=compact session=1a2b3c4d backend=codex saved=2 failed=0 updated=1 dropped=0
+```
+
+| 필드 | 의미 |
+|---|---|
+| `saved` | 저장된 기억 수(새로 만든 것 + 갱신한 것) |
+| `updated` | 그중 기존 기억을 갱신한 수 |
+| `dropped` | shrink guard 등으로 버린 수 |
+| `skipped=short\|off\|busy\|badjob` | 입력이 짧음 / 추출 꺼짐 / 같은 프로젝트 락 대기 초과 / 잘못된 작업 파일로 건너뜀 |
+
+한계: 최근 50개 밖의 오래된 기억, 제목이 다른 유사 기억은 LLM 판단에 맡기므로 중복이 남을 수 있습니다. 이미 쌓인 중복은 자동으로 정리하지 않습니다(`forget`으로 지우세요).
 
 ## 도구 5개
 

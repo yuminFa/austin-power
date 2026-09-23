@@ -189,7 +189,10 @@ def _classify_existing(existing) -> list[dict]:
     TITLE_MAX (the LLM's title field is schema-capped there, so it could
     never echo this title back exactly); its normalized title collides with
     another existing row's (ambiguous — we wouldn't know which one an
-    "update" was meant for); or its body doesn't fit the row/total budget.
+    "update" was meant for); its body contains a secret-like value (the body
+    must never be sent to the external LLM); or its body doesn't fit the
+    row/total budget. A row whose title itself is secret-like is "hidden":
+    left out of the prompt entirely, but still blocked from updates.
     """
     rows = []
     for row in existing:
@@ -215,8 +218,11 @@ def _classify_existing(existing) -> list[dict]:
     out = []
     total = 0
     for r in rows:
+        hidden = _has_secret(r["title"])
         title_only = (
-            r["truncated"]
+            hidden
+            or r["truncated"]
+            or _has_secret(r["body"])
             or len(r["norm_title"]) > TITLE_MAX
             or dupe_counts[r["norm_title"]] > 1
             or len(r["body"]) > EXISTING_BODY_MAX
@@ -227,7 +233,7 @@ def _classify_existing(existing) -> list[dict]:
             total += len(r["body"])
         out.append({
             "norm_title": r["norm_title"], "title": r["title"], "kind": r["kind"],
-            "body": r["body"], "title_only": title_only,
+            "body": r["body"], "title_only": title_only, "hidden": hidden,
         })
     return out
 
@@ -245,6 +251,7 @@ def build_prompt(text: str, project: str, source: str, existing=()) -> str:
             f"- [{r['kind']}] {r['title']} (title only — do not update)" if r["title_only"]
             else f"- [{r['kind']}] {r['title']}\n  {r['body']}"
             for r in rows
+            if not r["hidden"]
         ]
         existing_block = "<existing_memories>\n" + "\n".join(lines) + "\n</existing_memories>\n\n"
         action_instructions = (

@@ -1067,3 +1067,33 @@ def test_transcript_tail_non_string_text_block_drops_only_that_block(tmp_path):
             _codex_row("AgentMessage", "fine")]
     p = _jsonl(tmp_path, "t.jsonl", rows)
     assert extract.transcript_tail(p, 10000) == "[user]\nok\n\n[assistant]\nfine"
+
+
+# ---- secrets in existing memories must never reach the external LLM ----
+
+_SECRET = "sk-" + "A1b2C3d4E5f6G7h8I9j0"
+
+
+def test_build_prompt_never_includes_existing_secret_body():
+    existing = [{"kind": "fact", "title": "deploy key", "body": f"token is {_SECRET}", "truncated": False}]
+    prompt = extract.build_prompt("x" * 300, "p", "compact", existing)
+    assert _SECRET not in prompt
+    assert "deploy key (title only — do not update)" in prompt
+
+
+def test_build_prompt_hides_existing_row_whose_title_has_secret():
+    existing = [{"kind": "fact", "title": f"key {_SECRET}", "body": "plain", "truncated": False}]
+    prompt = extract.build_prompt("x" * 300, "p", "compact", existing)
+    assert _SECRET not in prompt
+
+
+def test_normalize_blocks_updates_to_secret_bearing_existing_rows():
+    existing = [
+        {"kind": "fact", "title": "deploy key", "body": f"token is {_SECRET}", "truncated": False},
+        {"kind": "fact", "title": f"key {_SECRET}", "body": "plain", "truncated": False},
+    ]
+    obj = {"memories": [
+        {"kind": "fact", "title": "deploy key", "body": "the deploy key is now rotated monthly by the ops runbook", "action": "update"},
+    ]}
+    items, dropped = extract.normalize(obj, existing)
+    assert items == [] and dropped == 1
