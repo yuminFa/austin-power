@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import stat
@@ -282,6 +283,54 @@ def test_build_prompt_marks_title_only_for_truncated_oversized_and_over_budget()
     assert chunk in p  # at least one full chunk body is inlined
 
 
+# ---- _classify_existing: ambiguous/overlong existing titles (single source for
+# build_prompt and normalize) ----
+
+def test_classify_existing_duplicate_normalized_titles_are_both_blocked():
+    existing = [
+        {"kind": "fact", "title": "dup title", "body": "body one", "truncated": False},
+        {"kind": "fact", "title": "dup   title", "body": "body two", "truncated": False},  # same normalized key
+    ]
+    rows = extract._classify_existing(existing)
+    assert len(rows) == 2
+    assert all(r["title_only"] for r in rows)
+
+
+def test_classify_existing_title_over_title_max_is_title_only():
+    long_title = "t" * (extract.TITLE_MAX + 1)
+    existing = [{"kind": "fact", "title": long_title, "body": "body", "truncated": False}]
+    rows = extract._classify_existing(existing)
+    assert rows[0]["title_only"] is True
+
+
+def test_build_prompt_marks_ambiguous_duplicate_titles_as_title_only():
+    existing = [
+        {"kind": "fact", "title": "dup title", "body": "body one", "truncated": False},
+        {"kind": "fact", "title": "dup   title", "body": "body two", "truncated": False},
+    ]
+    p = extract.build_prompt("hi", "proj", "compact", existing)
+    assert "dup title (title only" in p
+    assert "dup   title (title only" in p
+
+
+def test_normalize_ambiguous_duplicate_existing_titles_are_blocked_not_eligible():
+    existing = [
+        {"kind": "fact", "title": "dup title", "body": "body one", "truncated": False},
+        {"kind": "fact", "title": "dup   title", "body": "body two", "truncated": False},
+    ]
+    obj = {"memories": [{"kind": "fact", "title": "dup title", "body": "fresh content here", "action": "new"}]}
+    out, dropped = extract.normalize(obj, existing)
+    assert out == [] and dropped == 1
+
+
+def test_normalize_existing_title_over_title_max_is_blocked_not_eligible():
+    long_title = "t" * (extract.TITLE_MAX + 1)
+    existing = [{"kind": "fact", "title": long_title, "body": "old body content here", "truncated": False}]
+    obj = {"memories": [{"kind": "fact", "title": long_title, "body": "fresh content here plenty", "action": "new"}]}
+    out, dropped = extract.normalize(obj, existing)
+    assert out == [] and dropped == 1
+
+
 # ---- child_env / allowlist (C19) ----
 
 def test_child_env_allowlist():
@@ -429,7 +478,17 @@ def test_normalize_filters_and_caps():
     assert out[0]["body"] == "body a"
     assert out[2]["body"] == "first"
     assert all(m["action"] == "new" for m in out)
-    assert dropped == 0
+    assert dropped == 1  # the second "dup" item resolves to an already-kept final title
+
+
+def test_normalize_duplicate_final_title_within_result_is_dropped():
+    obj = {"memories": [
+        {"kind": "fact", "title": "same title", "body": "first body", "action": "new"},
+        {"kind": "fact", "title": "same   title", "body": "second body", "action": "new"},  # normalizes to the same key
+    ]}
+    out, dropped = extract.normalize(obj)
+    assert len(out) == 1 and out[0]["body"] == "first body"
+    assert dropped == 1
 
 
 def test_normalize_takes_first_eight_only():
@@ -549,76 +608,42 @@ def test_existing_memories_empty_project_returns_empty(tmp_path):
     assert extract.existing_memories(cfg, "") == []
 
 
-def test_existing_memories_mcp_path_excludes_session_and_marks_get_failures(tmp_path, monkeypatch):
+@pytest.mark.kiwi
+def test_existing_memories_reads_local_db_excludes_session_before_limit(tmp_path):
     cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h")})
-    from austin_power import config as config_mod
-    config_mod.ensure_home(cfg)
-    cfg.token_path.write_text("tok")
-
-    recent_rows = [
-        {"id": 1, "kind": "fact", "title": "a", "preview": "a-preview"},
-        {"id": 2, "kind": "session", "title": "sess", "preview": "s-preview"},
-        {"id": 3, "kind": "pattern", "title": "b", "preview": "b-preview"},
-    ]
-
-    def fake_call_tool(cfg_, token, name, args, timeout=5.0):
-        assert token == "tok"
-        if name == "recent":
-            assert args == {"project": "proj", "limit": 50}
-            return {"results": recent_rows}
-        if name == "get":
-            if args["id"] == 1:
-                return {"body": "full body a"}
-            raise hook.ServerError("boom")
-        raise AssertionError(f"unexpected tool {name}")
-
-    monkeypatch.setattr(hook, "call_tool", fake_call_tool)
+    conn = db.open_db(cfg.db_path)
+    # More session rows than EXISTING_LIMIT, all more recently updated than the
+    # one real fact row: a bug that applies LIMIT before filtering out
+    # kind='session' would starve the fact row out of the window entirely.
+    for i in range(extract.EXISTING_LIMIT + 5):
+        store.save(conn, title=f"session {i}", body="s", project="proj", kind="session", now=1000 + i)
+    store.save(conn, title="the fact", body="fact body", project="proj", kind="fact", now=1)
+    store.save(conn, title="other project note", body="x", project="other", kind="fact")
+    conn.close()
     out = extract.existing_memories(cfg, "proj")
-    assert [o["title"] for o in out] == ["a", "b"]  # session row excluded
-    assert out[0] == {"kind": "fact", "title": "a", "body": "full body a", "truncated": False}
-    assert out[1] == {"kind": "pattern", "title": "b", "body": "b-preview", "truncated": True}
+    assert out == [{"kind": "fact", "title": "the fact", "body": "fact body", "truncated": False}]
 
 
 @pytest.mark.kiwi
-def test_existing_memories_unreachable_falls_back_to_local_readonly_db(tmp_path, monkeypatch):
+def test_existing_memories_never_calls_mcp_server_even_with_valid_token(tmp_path, monkeypatch):
     cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h")})
-    conn = db.open_db(cfg.db_path)
-    store.save(conn, title="local one", body="local body", project="proj", kind="fact")
-    store.save(conn, title="a session summary", body="s", project="proj", kind="session")
-    store.save(conn, title="other project note", body="x", project="other", kind="fact")
-    conn.close()
-
-    def fake_call_tool(cfg_, token, name, args, timeout=5.0):
-        raise hook.Unreachable("refused")
-
     from austin_power import config as config_mod
     config_mod.ensure_home(cfg)
     cfg.token_path.write_text("tok")
-    monkeypatch.setattr(hook, "call_tool", fake_call_tool)
+    conn = db.open_db(cfg.db_path)
+    store.save(conn, title="local one", body="local body", project="proj", kind="fact")
+    conn.close()
+
+    def fail_call_tool(*a, **k):
+        raise AssertionError("existing_memories must not call the MCP server")
+
+    monkeypatch.setattr(hook, "call_tool", fail_call_tool)
     out = extract.existing_memories(cfg, "proj")
     assert out == [{"kind": "fact", "title": "local one", "body": "local body", "truncated": False}]
 
 
-@pytest.mark.kiwi
-def test_existing_memories_no_token_falls_back_to_local_readonly_db(tmp_path):
+def test_existing_memories_no_db_returns_empty(tmp_path):
     cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h")})
-    conn = db.open_db(cfg.db_path)
-    store.save(conn, title="local two", body="local body two", project="proj", kind="fact")
-    conn.close()
-    out = extract.existing_memories(cfg, "proj")
-    assert out == [{"kind": "fact", "title": "local two", "body": "local body two", "truncated": False}]
-
-
-def test_existing_memories_other_recent_error_returns_empty(tmp_path, monkeypatch):
-    cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h")})
-    from austin_power import config as config_mod
-    config_mod.ensure_home(cfg)
-    cfg.token_path.write_text("tok")
-
-    def fake_call_tool(cfg_, token, name, args, timeout=5.0):
-        raise hook.ServerError("boom")
-
-    monkeypatch.setattr(hook, "call_tool", fake_call_tool)
     assert extract.existing_memories(cfg, "proj") == []
 
 
@@ -638,9 +663,26 @@ def test_save_all_via_server(tmp_path, monkeypatch):
 
     monkeypatch.setattr(hook, "call_tool", fake_call_tool)
     items = [{"kind": "fact", "title": "a", "body": "b"}, {"kind": "fact", "title": "c", "body": "d"}]
-    saved, failed = extract.save_all(cfg, items, "proj", "sess")
-    assert (saved, failed) == (2, 0)
+    saved, failed, updated = extract.save_all(cfg, items, "proj", "sess")
+    assert (saved, failed, updated) == (2, 0, 0)
     assert all(f["session_id"] == "sess" and f["project"] == "proj" for f in calls)
+
+
+@pytest.mark.kiwi
+def test_save_all_via_server_counts_updated_from_result_action(tmp_path, monkeypatch):
+    cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h")})
+    from austin_power import config as config_mod
+    config_mod.ensure_home(cfg)
+    cfg.token_path.write_text("tok")
+    results = iter([{"id": 1, "action": "created"}, {"id": 2, "action": "updated"}])
+
+    def fake_call_tool(cfg_, token, name, fields, timeout=5.0):
+        return next(results)
+
+    monkeypatch.setattr(hook, "call_tool", fake_call_tool)
+    items = [{"kind": "fact", "title": "a", "body": "b"}, {"kind": "fact", "title": "c", "body": "d"}]
+    saved, failed, updated = extract.save_all(cfg, items, "proj", "sess")
+    assert (saved, failed, updated) == (2, 0, 1)
 
 
 def test_save_all_partial_server_error(tmp_path, monkeypatch):
@@ -658,18 +700,29 @@ def test_save_all_partial_server_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(hook, "call_tool", fake_call_tool)
     items = [{"kind": "fact", "title": "a", "body": "b"}, {"kind": "fact", "title": "c", "body": "d"}]
-    saved, failed = extract.save_all(cfg, items, "proj", "sess")
-    assert (saved, failed) == (1, 1)
+    saved, failed, updated = extract.save_all(cfg, items, "proj", "sess")
+    assert (saved, failed, updated) == (1, 1, 0)
 
 
 @pytest.mark.kiwi
 def test_save_all_fallback_when_no_token(tmp_path):
     cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h")})
     items = [{"kind": "fact", "title": "a", "body": "b"}]
-    saved, failed = extract.save_all(cfg, items, "proj", "sess")
-    assert (saved, failed) == (1, 0)
+    saved, failed, updated = extract.save_all(cfg, items, "proj", "sess")
+    assert (saved, failed, updated) == (1, 0, 0)
     conn = db.open_db(cfg.db_path)
     assert conn.execute("select count(*) from note").fetchone()[0] == 1
+
+
+@pytest.mark.kiwi
+def test_save_all_fallback_counts_updated_from_store_status(tmp_path):
+    cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h")})
+    conn = db.open_db(cfg.db_path)
+    store.save(conn, title="a", body="old", project="proj", kind="fact")
+    conn.close()
+    items = [{"kind": "fact", "title": "a", "body": "new"}, {"kind": "fact", "title": "new-one", "body": "b"}]
+    saved, failed, updated = extract.save_all(cfg, items, "proj", "sess")
+    assert (saved, failed, updated) == (2, 0, 1)
 
 
 @pytest.mark.kiwi
@@ -684,8 +737,8 @@ def test_save_all_fallback_when_unreachable(tmp_path, monkeypatch):
 
     monkeypatch.setattr(hook, "call_tool", fake_call_tool)
     items = [{"kind": "fact", "title": "a", "body": "b"}]
-    saved, failed = extract.save_all(cfg, items, "proj", "sess")
-    assert (saved, failed) == (1, 0)
+    saved, failed, updated = extract.save_all(cfg, items, "proj", "sess")
+    assert (saved, failed, updated) == (1, 0, 0)
 
 
 def test_save_all_lock_held_gives_up(tmp_path, monkeypatch):
@@ -696,15 +749,15 @@ def test_save_all_lock_held_gives_up(tmp_path, monkeypatch):
     assert lock.acquire()
     try:
         items = [{"kind": "fact", "title": "a", "body": "b"}]
-        saved, failed = extract.save_all(cfg, items, "proj", "sess")
-        assert (saved, failed) == (0, 1)
+        saved, failed, updated = extract.save_all(cfg, items, "proj", "sess")
+        assert (saved, failed, updated) == (0, 1, 0)
     finally:
         lock.release()
 
 
 def test_save_all_empty_items_is_noop(tmp_path):
     cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h")})
-    assert extract.save_all(cfg, [], "proj", "sess") == (0, 0)
+    assert extract.save_all(cfg, [], "proj", "sess") == (0, 0, 0)
     assert not (tmp_path / "h" / "memory.db").exists()
 
 
@@ -870,8 +923,8 @@ def test_main_end_to_end_updates_existing_memory_and_logs_updated_dropped(tmp_pa
     store.save(conn, title="known", body="x" * 100, project="proj", kind="fact")
     store.save(conn, title="known2", body="y" * 100, project="proj", kind="fact")
     conn.close()
-    # No token file written -> existing_memories() takes the TokenError -> local
-    # read-only DB fallback, exercising that path end to end too.
+    # existing_memories() always reads the local read-only DB directly now,
+    # exercising that path end to end (no token/server involved).
 
     merged_body = "x" * 100 + " plus a new merged detail worth keeping"
     codex_bin = codex_script(tmp_path, "c", memories=[
@@ -891,6 +944,63 @@ def test_main_end_to_end_updates_existing_memory_and_logs_updated_dropped(tmp_pa
     assert rows["known"] == merged_body  # updated in place, not duplicated
     assert rows["known2"] == "y" * 100  # shrink-guard drop left it untouched
     assert conn.execute("select count(*) from note").fetchone()[0] == 2
+
+
+# ---- per-project serialization (P1 lost-update fix) ----
+
+def _project_lock_path(tmp_path, project: str):
+    h = hashlib.sha256(project.encode("utf-8")).hexdigest()[:16]
+    return tmp_path / "h" / "jobs" / f"project-{h}.lock"
+
+
+def test_main_project_lock_busy_skips_without_saving(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
+    monkeypatch.setenv("AUSTIN_POWER_PROJECT", "proj")
+    monkeypatch.setattr(extract, "PROJECT_LOCK_RETRIES", 2)
+    monkeypatch.setattr(extract, "LOCK_RETRY_INTERVAL", 0.01)
+    cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h")})
+    lock_path = _project_lock_path(tmp_path, "proj")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = db.ServerLock(lock_path)
+    assert lock.acquire()
+    try:
+        job = _write_job(tmp_path, {"source": "compact", "session_id": "s", "cwd": "", "text": "x" * 250})
+        assert extract.main([str(job)]) == 0
+        log = _read_log(tmp_path)
+        assert "skipped=busy" in log
+        assert not job.exists()
+        assert not cfg.db_path.exists()  # nothing was saved while the project was locked
+    finally:
+        lock.release()
+
+
+def test_main_project_lock_released_on_exception(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
+    monkeypatch.setenv("AUSTIN_POWER_PROJECT", "proj")
+
+    def boom(cfg, project):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(extract, "existing_memories", boom)
+    job = _write_job(tmp_path, {"source": "compact", "session_id": "s", "cwd": "", "text": "x" * 250})
+    assert extract.main([str(job)]) == 0
+    assert "error=RuntimeError" in _read_log(tmp_path)
+    # the lock must be released even though the protected section raised
+    lock = db.ServerLock(_project_lock_path(tmp_path, "proj"))
+    assert lock.acquire()
+    lock.release()
+
+
+def test_main_empty_project_needs_no_lock(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUSTIN_POWER_HOME", str(tmp_path / "h"))
+    codex_bin = codex_script(tmp_path, "c", memories=[])
+    monkeypatch.setenv("AUSTIN_POWER_EXTRACT", "codex")
+    monkeypatch.setenv("AUSTIN_POWER_CODEX_BIN", codex_bin)
+    # cwd="" and no AUSTIN_POWER_PROJECT -> resolve_project() returns "" -> no lock needed.
+    job = _write_job(tmp_path, {"source": "compact", "session_id": "s", "cwd": "", "text": "x" * 250})
+    assert extract.main([str(job)]) == 0
+    assert "backend=codex" in _read_log(tmp_path)
+    assert list((tmp_path / "h" / "jobs").glob("project-*.lock")) == []  # no lock file created
 
 
 def test_python_m_entry_point_runs_a_real_job(tmp_path):
@@ -921,7 +1031,7 @@ def test_save_all_unreachable_midway_falls_back_for_rest_only(tmp_path, monkeypa
 
     monkeypatch.setattr(hook, "call_tool", fake_call_tool)
     items = [{"kind": "fact", "title": t, "body": "b"} for t in ("a", "c", "e")]
-    assert extract.save_all(cfg, items, "proj", "sess") == (3, 0)
+    assert extract.save_all(cfg, items, "proj", "sess") == (3, 0, 0)
     conn = db.open_db(cfg.db_path)
     assert [r[0] for r in conn.execute("select title from note order by title")] == ["c", "e"]
 

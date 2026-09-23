@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -31,6 +32,7 @@ STALE_SECONDS = 24 * 3600
 MAX_LOG_BYTES = 1024 * 1024
 LOCK_RETRIES = 30
 LOCK_RETRY_INTERVAL = 1.0
+PROJECT_LOCK_RETRIES = 420  # ~7 min at LOCK_RETRY_INTERVAL=1s
 
 VALID_KINDS = frozenset({"architecture", "workflow", "bug", "pattern", "preference", "fact", "decision"})
 
@@ -181,9 +183,15 @@ def _classify_existing(existing) -> list[dict]:
     """Shared by build_prompt (what the LLM is shown) and normalize (which
     titles are update-eligible), so both reach identical title-only decisions
     for the same input in the same order — see EXISTING_BODY_MAX/_TOTAL_MAX.
+
+    A row is title-only (shown without its body, and never update-eligible)
+    when: it came in already truncated; its normalized title is longer than
+    TITLE_MAX (the LLM's title field is schema-capped there, so it could
+    never echo this title back exactly); its normalized title collides with
+    another existing row's (ambiguous — we wouldn't know which one an
+    "update" was meant for); or its body doesn't fit the row/total budget.
     """
-    out = []
-    total = 0
+    rows = []
     for row in existing:
         if not isinstance(row, dict):
             continue
@@ -195,14 +203,31 @@ def _classify_existing(existing) -> list[dict]:
             continue
         body = row.get("body")
         body = body if isinstance(body, str) else ""
-        title_only = bool(row.get("truncated")) or len(body) > EXISTING_BODY_MAX
-        if not title_only and total + len(body) > EXISTING_TOTAL_MAX:
+        rows.append({
+            "norm_title": norm, "title": title, "kind": row.get("kind"),
+            "body": body, "truncated": bool(row.get("truncated")),
+        })
+
+    dupe_counts: dict[str, int] = {}
+    for r in rows:
+        dupe_counts[r["norm_title"]] = dupe_counts.get(r["norm_title"], 0) + 1
+
+    out = []
+    total = 0
+    for r in rows:
+        title_only = (
+            r["truncated"]
+            or len(r["norm_title"]) > TITLE_MAX
+            or dupe_counts[r["norm_title"]] > 1
+            or len(r["body"]) > EXISTING_BODY_MAX
+        )
+        if not title_only and total + len(r["body"]) > EXISTING_TOTAL_MAX:
             title_only = True
         if not title_only:
-            total += len(body)
+            total += len(r["body"])
         out.append({
-            "norm_title": norm, "title": title, "kind": row.get("kind"),
-            "body": body, "title_only": title_only,
+            "norm_title": r["norm_title"], "title": r["title"], "kind": r["kind"],
+            "body": r["body"], "title_only": title_only,
         })
     return out
 
@@ -320,6 +345,7 @@ def normalize(obj, existing=()) -> tuple[list[dict], int]:
         else:
             final_title = norm_title if len(norm_title) <= TITLE_MAX else norm_title[: TITLE_MAX - 1] + "…"
         if final_title in seen:
+            dropped += 1
             continue
         seen.add(final_title)
         out.append({"kind": kind, "title": final_title, "body": body, "action": action})
@@ -450,7 +476,12 @@ _EXISTING_FALLBACK_SQL = (
 )
 
 
-def _existing_memories_fallback(cfg, project: str) -> list[dict]:
+def _read_existing(cfg, project: str) -> list[dict]:
+    """Read recent non-session memories for `project` straight from the local
+    read-only DB (kind='session' is excluded in SQL, before LIMIT — unlike the
+    old MCP recent() path, which applied LIMIT server-side first and then
+    filtered sessions client-side, starving the window when session rows were
+    recent). Safe to read while the server holds its WAL write lock. Never raises."""
     from austin_power import db  # heavy imports lazily, like _fallback_save_all
 
     try:
@@ -471,44 +502,10 @@ def existing_memories(cfg, project: str) -> list[dict]:
     Never raises; on any unexpected failure returns []."""
     if not project:
         return []
-    try:
-        token = auth.read_token(cfg.token_path)
-    except auth.TokenError:
-        return _existing_memories_fallback(cfg, project)
-    try:
-        res = hook.call_tool(cfg, token, "recent", {"project": project, "limit": EXISTING_LIMIT}, timeout=5.0)
-    except hook.Unreachable:
-        return _existing_memories_fallback(cfg, project)
-    except Exception:  # noqa: BLE001 - any other recent() failure -> empty, never raise
-        return []
-    try:
-        rows = res.get("results") if isinstance(res, dict) else None
-        if not isinstance(rows, list):
-            return []
-        out = []
-        for row in rows:
-            if not isinstance(row, dict) or row.get("kind") == "session":
-                continue
-            rid, title, kind = row.get("id"), row.get("title"), row.get("kind")
-            if not isinstance(title, str) or not isinstance(kind, str):
-                continue
-            try:
-                full = hook.call_tool(cfg, token, "get", {"id": rid}, timeout=5.0)
-                body = full.get("body") if isinstance(full, dict) else None
-                if not isinstance(body, str):
-                    raise TypeError("missing body")
-                truncated = False
-            except Exception:  # noqa: BLE001 - a single get() failure falls back to the row's preview
-                preview = row.get("preview")
-                body = preview if isinstance(preview, str) else ""
-                truncated = True
-            out.append({"kind": kind, "title": title, "body": body, "truncated": truncated})
-        return out
-    except Exception:  # noqa: BLE001 - existing_memories must never raise
-        return []
+    return _read_existing(cfg, project)
 
 
-def _fallback_save_all(cfg, fields_list: list[dict]) -> tuple[int, int]:
+def _fallback_save_all(cfg, fields_list: list[dict]) -> tuple[int, int, int]:
     from austin_power import db, store  # heavy imports only here, and only on this fallback path
 
     config.ensure_home(cfg)
@@ -520,27 +517,29 @@ def _fallback_save_all(cfg, fields_list: list[dict]) -> tuple[int, int]:
             break
         time.sleep(LOCK_RETRY_INTERVAL)
     if not acquired:
-        return 0, len(fields_list)
-    saved = failed = 0
+        return 0, len(fields_list), 0
+    saved = failed = updated = 0
     try:
         conn = db.open_db(cfg.db_path, busy_timeout=20000, rebuild_allowed=True)
         try:
             for fields in fields_list:
                 try:
-                    store.save(conn, **fields)
+                    _id, status = store.save(conn, **fields)
                     saved += 1
+                    if status == "updated":
+                        updated += 1
                 except Exception:  # noqa: BLE001 - one bad item must not sink the batch
                     failed += 1
         finally:
             conn.close()
     finally:
         lock.release()
-    return saved, failed
+    return saved, failed, updated
 
 
-def save_all(cfg, items: list[dict], project: str, session_id: str) -> tuple[int, int]:
+def save_all(cfg, items: list[dict], project: str, session_id: str) -> tuple[int, int, int]:
     if not items:
-        return 0, 0
+        return 0, 0, 0
     sid = (session_id or "")[:200]
     fields_list = [
         {"title": it["title"], "body": it["body"], "kind": it["kind"], "project": project, "session_id": sid}
@@ -550,17 +549,19 @@ def save_all(cfg, items: list[dict], project: str, session_id: str) -> tuple[int
         token = auth.read_token(cfg.token_path)
     except auth.TokenError:
         return _fallback_save_all(cfg, fields_list)
-    saved = failed = 0
+    saved = failed = updated = 0
     for i, fields in enumerate(fields_list):
         try:
-            hook.call_tool(cfg, token, "save", fields, timeout=10)
+            res = hook.call_tool(cfg, token, "save", fields, timeout=10)
             saved += 1
+            if isinstance(res, dict) and res.get("action") == "updated":
+                updated += 1
         except hook.Unreachable:
-            s2, f2 = _fallback_save_all(cfg, fields_list[i:])
-            return saved + s2, failed + f2
+            s2, f2, u2 = _fallback_save_all(cfg, fields_list[i:])
+            return saved + s2, failed + f2, updated + u2
         except (hook.ServerError, TimeoutError):
             failed += 1
-    return saved, failed
+    return saved, failed, updated
 
 
 def _append_log(path: Path, line: str) -> None:
@@ -602,6 +603,11 @@ def _cleanup_stale(jobs_dir: Path, keep: Path) -> None:
                 pass
     except OSError:
         pass
+
+
+def _project_lock_path(cfg, project: str) -> Path:
+    h = hashlib.sha256(project.encode("utf-8")).hexdigest()[:16]
+    return cfg.home / "jobs" / f"project-{h}.lock"
 
 
 def _read_job(path: Path):
@@ -667,12 +673,36 @@ def main(argv: list[str]) -> int:
             text = text[-MAX_CHARS:]
 
         project = hook.resolve_project(obj.get("cwd") or "", env)
-        existing = existing_memories(cfg, project)
-        prompt = build_prompt(text, project, source, existing)
-        backend, result = run_backends(prompt, env, log)
-        items, dropped = normalize(result, existing) if result is not None else ([], 0)
-        saved, failed = save_all(cfg, items, project, sid) if items else (0, 0)
-        updated = min(sum(1 for it in items if it.get("action") == "update"), saved)
+
+        # Empty project -> no dedup is possible anyway, so no lock is needed.
+        # Otherwise, serialize the whole existing_memories()..save_all() cycle
+        # per project: two concurrent workers for the same project could
+        # otherwise both read the same existing body, merge independently,
+        # and overwrite each other's merge (lost update).
+        plock = None
+        if project:
+            from austin_power import db  # lazy import, only needed for the per-project lock
+
+            plock = db.ServerLock(_project_lock_path(cfg, project))
+            acquired = False
+            for _ in range(PROJECT_LOCK_RETRIES):
+                if plock.acquire():
+                    acquired = True
+                    break
+                time.sleep(LOCK_RETRY_INTERVAL)
+            if not acquired:
+                log(_line(source, sid, "none", 0, 0, skipped="busy"))
+                return 0
+
+        try:
+            existing = existing_memories(cfg, project)
+            prompt = build_prompt(text, project, source, existing)
+            backend, result = run_backends(prompt, env, log)
+            items, dropped = normalize(result, existing) if result is not None else ([], 0)
+            saved, failed, updated = save_all(cfg, items, project, sid) if items else (0, 0, 0)
+        finally:
+            if plock is not None:
+                plock.release()
         log(_line(source, sid, backend or "none", saved, failed, updated=updated, dropped=dropped))
         return 0
     except Exception as e:  # noqa: BLE001 - worker must always exit 0
