@@ -184,7 +184,7 @@ def test_run_rebuild_measurement_smoke(tmp_path):
     assert result["rebuild_1000_s"] > 0
 
 
-def test_check_acceptance_matches_main_exit_code(tmp_path, monkeypatch):
+def test_check_acceptance_matches_main_exit_code():
     # main() must exit 1 if any acceptance item fails, 0 if all pass — verified
     # here against check_acceptance directly rather than a full real run
     # (that's exercised once, separately, for the actual README/spec numbers).

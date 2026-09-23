@@ -6,17 +6,17 @@ Lightweight, Korean-aware memory server for coding agents (MCP over local HTTP).
 
 ## Why
 
-Built after real-world friction with a general-purpose memory server: heavy resident memory for a small dataset (~550MB for the same 1MB dataset), several process layers per session, an index that keeps accumulating full-rebuild generations, and Korean search that misses because particles (조사) are indexed as part of the word. austin-power fixes this with an incremental SQLite FTS5 index, a single resident process (plus a Kiwi worker child that only runs while it's needed), and a Korean morphological tokenizer (Kiwi).
+Built after real-world friction with a general-purpose memory server: heavy resident memory for a small dataset (~550MB for the same 1MB dataset), several process layers per session, an index that keeps accumulating full-rebuild generations, and Korean search that misses because particles (조사) are indexed as part of the word. austin-power fixes this with an incremental SQLite FTS5 index, a single resident process (plus a Kiwi worker child that self-terminates when idle), and a Korean morphological tokenizer (Kiwi).
 
 ### Memory: idle vs. active
 
-Kiwi's model (~400MB) doesn't live in the server process — it's loaded only in a separate `kiwi_worker` child (§2.5.1), so there are two numbers instead of one:
+Kiwi's model (~400MB) doesn't live in the server process — it's loaded only in a separate `kiwi_worker` child (§2.5.1). That worker isn't lazily spawned on the first call, though: it starts as soon as the server does (`db.open_db()` calls `tokenizer.ensure_ready()` unconditionally), and only *exits* on its own after `AUSTIN_POWER_KIWI_IDLE` seconds of no requests. So there are two numbers instead of one:
 
-- **Idle** (server only, before any call reaches the tokenizer) — about **69.5MB**.
+- **Server process alone** (the server's own RSS, independent of whether the worker happens to be up) — about **69.5MB**. Right after boot the worker is running too, so the real total is higher than this until it idles out.
 - **Active** (server + worker combined, peak observed over 1,000 `save`/`search` calls) — about **580MB**.
-- The worker self-terminates after `AUSTIN_POWER_KIWI_IDLE` seconds (default 600, see [Configuration](#configuration)) of no requests, returning that ~400MB to the OS. The first call after an idle unload respawns and re-handshakes the worker, adding about **0.87s** of latency.
+- The worker self-terminates after `AUSTIN_POWER_KIWI_IDLE` seconds (default 600, see [Configuration](#configuration)) of no requests, returning that ~400MB to the OS. The next call after that respawns and re-handshakes the worker, adding about **0.87s** of latency.
 - If the tokenizer rules ever change, forcing a full reindex, restarting the server with 1,000 existing notes — worker respawn, model reload and the FTS5 rebuild all included — takes about **1.22s**.
-- Measured 2026-09-23 (macOS arm64, `scripts/measure_rss.py`) against spec §2.5.1's targets (idle ≤120MB · active ≤650MB · first call after idle ≤3s · rebuild 1,000 notes ≤15s) — all four passed.
+- Measured 2026-09-23 (macOS arm64, `scripts/measure_rss.py`) against spec §2.5.1's targets (server alone ≤120MB · active total ≤650MB · first call after idle unload ≤3s · rebuild 1,000 notes ≤15s) — all four passed.
 
 ## Features
 
