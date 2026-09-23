@@ -426,7 +426,7 @@ def main(argv: list[str]) -> int:
             return 0
         job_path = Path(argv[0])
         env = os.environ
-        cfg = load_config(env=env)
+        cfg = load_config(env=env, strict_log_level=False)
         log_path = cfg.home / "extract.log"
         log = lambda msg: _append_log(log_path, msg)
 

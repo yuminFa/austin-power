@@ -248,3 +248,12 @@ def test_spawn_extract_never_raises_when_home_unwritable(tmp_path, monkeypatch, 
     monkeypatch.setattr(config_mod, "ensure_home", boom)
     hook.spawn_extract(cfg, {}, {"source": "compact", "session_id": "s", "text": "x"})
     assert fake_popen == []
+
+# An invalid server-only setting (log level) must not stop hooks from spawning extraction.
+@pytest.mark.kiwi
+def test_invalid_log_level_does_not_block_hooks(tmp_path, monkeypatch, fake_popen):
+    env = {"AUSTIN_POWER_HOME": str(tmp_path / "h"), "AUSTIN_POWER_PORT": "1", "AUSTIN_POWER_PROJECT": "proj",
+           "AUSTIN_POWER_LOG_LEVEL": "TRACE"}
+    p = {"session_id": "s", "cwd": str(tmp_path), "transcript_path": str(tmp_path / "t.jsonl")}
+    code = hook.main("session-end", stdin=io.StringIO(json.dumps(p)), stdout=io.StringIO(), stderr=io.StringIO(), env=env)
+    assert code == 0 and len(fake_popen) == 1

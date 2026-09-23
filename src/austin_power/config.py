@@ -61,19 +61,23 @@ def _int(value, name: str, lo: int, hi: int) -> int:
         raise ConfigError(f"{name} must be between {lo} and {hi}, got {n}")
     return n
 
-def _log_level(value: str) -> str:
+def _log_level(value: str, *, strict: bool = True) -> str:
     v = str(value).strip()
     if not v:
         return "INFO"
     v = v.upper()
     if v not in VALID_LOG_LEVELS:
+        if not strict:
+            return "INFO"
         raise ConfigError(
             f"AUSTIN_POWER_LOG_LEVEL must be one of "
             f"{', '.join(sorted(VALID_LOG_LEVELS))}, got {value!r}"
         )
     return v
 
-def load_config(*, host=None, port=None, env: Mapping[str, str] | None = None) -> Config:
+def load_config(*, host=None, port=None, env: Mapping[str, str] | None = None, strict_log_level: bool = True) -> Config:
+    # Hooks and the extract worker never configure logging, so they pass
+    # strict_log_level=False: a bad server-only log level must not stop them.
     env = os.environ if env is None else env
     home = resolve_home(env)
     db = _abs(env["AUSTIN_POWER_DB"], home) if env.get("AUSTIN_POWER_DB") else home / "memory.db"
@@ -85,7 +89,7 @@ def load_config(*, host=None, port=None, env: Mapping[str, str] | None = None) -
         host=(host or env.get("AUSTIN_POWER_HOST") or DEFAULT_HOST).strip(),
         port=_int(port if port is not None else env.get("AUSTIN_POWER_PORT", DEFAULT_PORT), "port", 1, 65535),
         inject_chars=_int(env.get("AUSTIN_POWER_INJECT_CHARS", DEFAULT_INJECT_CHARS), "AUSTIN_POWER_INJECT_CHARS", 1, 1_000_000),
-        log_level=_log_level(env.get("AUSTIN_POWER_LOG_LEVEL", "INFO")),
+        log_level=_log_level(env.get("AUSTIN_POWER_LOG_LEVEL", "INFO"), strict=strict_log_level),
         kiwi_idle=_int(env.get("AUSTIN_POWER_KIWI_IDLE", DEFAULT_KIWI_IDLE), "AUSTIN_POWER_KIWI_IDLE", 0, 86400),
     )
 

@@ -189,7 +189,7 @@ def main(event: str, *, stdin=None, stdout=None, stderr=None, env=None) -> int:
             raise ValueError("hook input must be a JSON object")  # noqa: TRY004 - fail-open input validation, not a type-mismatch bug
         if not isinstance(data.get("cwd", ""), str):
             raise ValueError("cwd must be a string")  # noqa: TRY004
-        cfg = load_config(env=env)
+        cfg = load_config(env=env, strict_log_level=False)
         _HANDLERS.get(event, _session_start)(data, cfg, env, stdout, stderr)
     except (ValueError, ConfigError) as e:
         print(f"austin-power hook: ignored invalid input: {e}", file=stderr)

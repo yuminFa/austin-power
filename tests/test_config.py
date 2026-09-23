@@ -75,3 +75,7 @@ def test_log_level_lowercase_is_uppercased(tmp_path):
 def test_log_level_unsupported_raises_config_error(tmp_path):
     with pytest.raises(ConfigError):
         load_config(env={"AUSTIN_POWER_HOME": str(tmp_path), "AUSTIN_POWER_LOG_LEVEL": "TRACE"})
+
+def test_log_level_lenient_falls_back_to_info(tmp_path):
+    cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path), "AUSTIN_POWER_LOG_LEVEL": "TRACE"}, strict_log_level=False)
+    assert cfg.log_level == "INFO"
