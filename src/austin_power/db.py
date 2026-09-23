@@ -75,9 +75,25 @@ def _needs_rebuild(conn: apsw.Connection, sig: str) -> bool:
     return _stored_sig(conn) != sig
 
 
+def _create_private(path: Path) -> None:
+    """If the DB file doesn't exist yet, create it 0600 up front so SQLite's
+    unix VFS never falls back to the process umask (e.g. 0644 in a shared,
+    group/world-searchable directory this call doesn't own). Pre-existing
+    files are left untouched — this never chmods a file the caller already
+    has. SQLite gives -wal/-shm the main file's mode, so they follow."""
+    if os.name == "win32" or path.exists():
+        return
+    try:
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return  # lost the race to another opener; leave its file as-is
+    os.close(fd)
+
+
 def open_db(path: Path, *, busy_timeout: int = 5000, rebuild_allowed: bool = True) -> apsw.Connection:
     path = Path(path)
     _mkdir_private(path.parent)
+    _create_private(path)
     conn = apsw.Connection(str(path))
     tokenizer.register(conn)
     conn.execute("PRAGMA journal_mode=WAL")

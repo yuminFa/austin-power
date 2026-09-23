@@ -82,6 +82,31 @@ def test_open_db_creates_new_parent_dirs_private(tmp_path):
     assert ((tmp_path / "new" / "sub").stat().st_mode & 0o777) == 0o700
 
 
+@pytest.mark.skipif(os.name != "posix", reason="posix permission bits only")
+def test_open_db_creates_new_db_file_private_even_in_shared_dir(tmp_path):
+    """A pre-existing group/world-searchable directory (e.g. a shared parent
+    the caller doesn't own) must not leak into the new DB file's mode via the
+    process umask — the file is created 0600 regardless of umask, and so are
+    its WAL sidecars (spec: 'Create new DB files with 0600')."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o755)  # pre-existing dir, left untouched by _mkdir_private
+    path = shared / "m.db"
+
+    old_umask = os.umask(0o022)
+    try:
+        c = db.open_db(path)
+        try:
+            assert (path.stat().st_mode & 0o777) == 0o600
+            wal = path.with_name(path.name + "-wal")
+            if wal.exists():
+                assert (wal.stat().st_mode & 0o777) == 0o600
+        finally:
+            c.close()
+    finally:
+        os.umask(old_umask)
+
+
 def test_second_lock_fails(tmp_path):
     a, b = db.ServerLock(tmp_path / "l"), db.ServerLock(tmp_path / "l")
     assert a.acquire() is True
