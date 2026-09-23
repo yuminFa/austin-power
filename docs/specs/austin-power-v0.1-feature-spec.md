@@ -34,7 +34,7 @@ status: draft
 | `id TEXT PRIMARY KEY` + `content_rowid='rowid'` | **`id INTEGER PRIMARY KEY`** | 명시적 INTEGER PRIMARY KEY가 없는 테이블은 `VACUUM`이 rowid를 재번호할 수 있어 external-content FTS가 어긋난다(SQLite `VACUUM` 문서) |
 | 도구 4개 | **5개(`get` 추가)** | `search`는 발췌만 돌려주므로 전문을 읽을 경로가 필요 |
 | `kind` 고정 5종 | **자유 슬러그** | 사용자마다 분류 체계가 다름(이관 대상 350건은 `architecture`·`workflow`·`fact`·`bug`·`preference`·`pattern` — jq 실측) |
-| 증류는 에이전트가 자발적으로 | **+ PostCompact hook 자동 저장** | Claude Code가 압축 시 만든 요약(`compact_summary`)을 저장 → 추가 LLM 호출 0, 서버 LLM 금지 원칙 유지 |
+| 증류는 에이전트가 자발적으로 | **+ PostCompact hook 자동 저장** | Claude Code가 압축 시 만든 요약(`compact_summary`)을 저장 → 추가 LLM 호출 0, 서버 LLM 금지 원칙 유지. 요구는 "압축 시점(PreCompact)에 증류"였으나 PreCompact 입력에는 요약이 없고(`transcript_path`·`trigger`·`custom_instructions`뿐) 컨텍스트 주입도 불가 → 같은 압축 시점의 **직후** 이벤트인 PostCompact로 충족 |
 | 주입 상한 2,000 토큰 | **4,000자**(환경변수로 조정) | 토큰 수는 모델·언어별로 달라 서버가 셀 수 없음. 한국어·영어 혼합 기준 대략 2,000 토큰 수준 `[inferred]` |
 | "DB는 sqlite3로 열면 됨" | **읽기는 누구나, 쓰기는 `kiwi`를 등록한 연결만** | `note`에 걸린 트리거가 `kiwi` 토크나이저를 요구. 쓰기 주체는 셋(서버·`import`·post-compact 폴백)이고 모두 같은 열기 루틴(2.4 `open_db`)을 거친다 |
 
