@@ -151,7 +151,7 @@ python contrib/agentmemory_to_jsonl.py -o am.jsonl
 austin-power import am.jsonl
 ```
 
-자세한 변환 규칙은 [`contrib/README.md`](contrib/README.md)를 참고하세요.
+세션 압축 요약(`mem%3Asummaries.bin`)도 함께 변환됩니다(`--no-summaries`로 끌 수 있음). 자세한 변환 규칙은 [`contrib/README.md`](contrib/README.md)를 참고하세요.
 
 ## 한계 (v0.1)
 

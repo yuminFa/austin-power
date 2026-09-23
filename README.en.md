@@ -82,7 +82,7 @@ python contrib/agentmemory_to_jsonl.py -o am.jsonl
 austin-power import am.jsonl
 ```
 
-Details: [`contrib/README.md`](contrib/README.md).
+Session compaction summaries (`mem%3Asummaries.bin`) are converted too (disable with `--no-summaries`). Details: [`contrib/README.md`](contrib/README.md).
 
 ## Limitations (v0.1)
 

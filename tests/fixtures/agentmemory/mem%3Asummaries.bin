@@ -1,0 +1,30 @@
+{
+  "sum_1": {
+    "sessionId": "sess_1",
+    "project": "shop",
+    "title": "견적 시스템 세션 요약",
+    "narrative": "세션 내러티브 본문",
+    "keyDecisions": ["결정 a", "결정 b"],
+    "filesModified": ["a.py", "b.py"],
+    "concepts": ["quote", "견적"],
+    "observationCount": "5",
+    "createdAt": "2026-07-20T00:00:00Z"
+  },
+  "sum_2": {
+    "sessionId": "sess_2",
+    "project": "web",
+    "title": "배포 세션 요약",
+    "narrative": "배포 내러티브",
+    "keyDecisions": "[\"decision x\"]",
+    "filesModified": "[\"deploy.sh\"]",
+    "concepts": "[\"deploy\"]",
+    "observationCount": "3",
+    "createdAt": "2026-07-21T00:00:00Z"
+  },
+  "sum_3": {
+    "project": "web",
+    "title": "누락 케이스",
+    "narrative": "sessionId 없음",
+    "createdAt": "2026-07-22T00:00:00Z"
+  }
+}
