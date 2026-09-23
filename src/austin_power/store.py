@@ -60,7 +60,7 @@ def clean_fields(title, body, project, kind, session_id):
     return (
         _text("title", title, 1, TITLE_MAX),
         _text("body", body, 1, BODY_MAX),
-        _text("project", project or "", 0, PROJECT_MAX),
+        _text("project", "" if project is None else project, 0, PROJECT_MAX),
         None if kind is None else normalize_kind(kind),
         None if session_id is None else _text("session_id", session_id, 0, SESSION_MAX),
     )
@@ -111,7 +111,9 @@ def _decide(row: ImportRow, existing) -> str:
     _, body, kind, sid, _, upd = existing
     if row.updated_at < upd:
         return "skipped"
-    if row.updated_at == upd and row.body == body and (row.kind or kind) == kind and (row.session_id or sid) == sid:
+    eff_kind = row.kind if row.kind is not None else kind
+    eff_sid = row.session_id if row.session_id is not None else sid
+    if row.updated_at == upd and row.body == body and eff_kind == kind and eff_sid == sid:
         return "skipped"
     return "updated"
 

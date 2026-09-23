@@ -2,6 +2,7 @@ import io
 import json
 import subprocess
 import sys
+import urllib.request
 
 import pytest
 
@@ -61,6 +62,42 @@ def test_format_context_respects_cap():
     text = hook.format_context("proj", items, cap=1000)
     assert len(text) <= 1000 and text.startswith("austin-power: recent memories for proj")
     assert "- [fact] t0 (#0, 2026-09-23): " in text
+
+def test_call_tool_ignores_env_proxy(monkeypatch):
+    captured = {}
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"result": {"structuredContent": {"ok": True}}}).encode()
+
+    class FakeOpener:
+        def open(self, req, timeout=None):
+            captured["opened_with_timeout"] = timeout
+            return FakeResp()
+
+    def fake_build_opener(*handlers):
+        captured["handlers"] = handlers
+        return FakeOpener()
+
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
+
+    cfg = type("Cfg", (), {"mcp_url": "http://127.0.0.1:7760/mcp"})()
+    result = hook.call_tool(cfg, "tok", "recent", {}, timeout=3.0)
+
+    assert result == {"ok": True}
+    assert captured["opened_with_timeout"] == 3.0
+    assert len(captured["handlers"]) == 1
+    h = captured["handlers"][0]
+    assert isinstance(h, urllib.request.ProxyHandler)
+    assert h.proxies == {}
 
 def test_resolve_project(tmp_path):
     assert hook.resolve_project(str(tmp_path), {"AUSTIN_POWER_PROJECT": "x"}) == "x"

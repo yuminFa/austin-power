@@ -51,6 +51,32 @@ def test_parse_errors(line, reason):
         importer.parse_line(line)
 
 
+@pytest.mark.parametrize("bad_project", [0, False, [], 1])
+def test_parse_line_rejects_non_str_project(bad_project):
+    line = json.dumps({"title": "t", "body": "b", "project": bad_project})
+    with pytest.raises(ValueError, match="project"):
+        importer.parse_line(line)
+
+
+def test_parse_line_null_project_is_omitted():
+    row = importer.parse_line(json.dumps({"title": "t", "body": "b", "project": None}))
+    assert row.project == ""
+
+
+def test_parse_line_rejects_non_finite_timestamp():
+    line = json.dumps({"title": "t", "body": "b", "created_at": 1e400})
+    with pytest.raises(ValueError, match="out of range"):
+        importer.parse_line(line)
+
+
+def test_run_import_reports_non_finite_timestamp_as_failed_line(tmp_path, capsys):
+    p = write(tmp_path, [], raw=(json.dumps({"title": "t", "body": "b", "created_at": 1e400}) + "\n").encode())
+    c = cfg(tmp_path)
+    assert importer.run_import(c, p, dry_run=False) == 1
+    out = capsys.readouterr().out
+    assert "failed 1" in out and "created 0" in out
+
+
 @pytest.mark.kiwi
 def test_import_counts_and_rerun(tmp_path, capsys):
     rows = [{"title": f"t{i}", "body": "본문", "created_at": 10, "updated_at": 10} for i in range(3)]
@@ -79,8 +105,31 @@ def test_dry_run_creates_nothing(tmp_path, capsys):
     assert "created 1" in capsys.readouterr().out and not c.db_path.exists()
 
 
+def test_dry_run_simulates_duplicates_within_file(tmp_path, capsys):
+    c = cfg(tmp_path)
+    rows = [{"title": "t", "body": "b", "updated_at": 10}, {"title": "t", "body": "b", "updated_at": 10}]
+    assert importer.run_import(c, write(tmp_path, rows), dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "created 1, updated 0, skipped 1, failed 0" in out
+    assert not c.db_path.exists()
+
+
 def test_missing_file(tmp_path):
     assert importer.run_import(cfg(tmp_path), tmp_path / "nope.jsonl", dry_run=False) == 2
+
+
+def test_unopenable_db_reports_error_not_traceback(tmp_path, capsys):
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    try:
+        c = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h"), "AUSTIN_POWER_DB": str(ro / "memory.db")})
+        p = write(tmp_path, [{"title": "t", "body": "b"}])
+        assert importer.run_import(c, p, dry_run=False) == 1
+        out = capsys.readouterr().out
+        assert out.startswith("error: cannot open database ") and str(ro / "memory.db") in out
+    finally:
+        ro.chmod(0o700)
 
 
 @pytest.mark.kiwi

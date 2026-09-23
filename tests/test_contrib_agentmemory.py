@@ -16,6 +16,23 @@ def test_convert():
     assert ("api", "배포 절차") in by                                         # mem_3 → api, no collision
     assert all(r["title"] != "old" for r in rows)
 
+def test_collision_tracks_every_emitted_title(tmp_path):
+    mems = {
+        "m1": {"id": "m1", "title": "foo", "content": "c1", "type": "fact", "isLatest": True,
+               "sessionIds": [], "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"},
+        "m2": {"id": "m2", "title": "foo", "content": "c2", "type": "fact", "isLatest": True,
+               "sessionIds": [], "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"},
+        "m3": {"id": "m3", "title": "foo (2)", "content": "c3", "type": "fact", "isLatest": True,
+               "sessionIds": [], "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"},
+    }
+    (tmp_path / "mem%3Amemories.bin").write_text(json.dumps(mems))
+    rows, skips = am.convert(tmp_path)
+    assert not skips
+    titles = [r["title"] for r in rows]
+    assert len(titles) == len(set(titles)) == 3
+    assert all(len(t) <= 200 for t in titles)
+
+
 def test_collision_suffix_and_limits(tmp_path):
     mems = {f"m{i}": {"id": f"m{i}", "title": "x" * 250, "content": "c", "type": "Weird Type!", "isLatest": True,
                       "sessionIds": [], "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"} for i in range(2)}

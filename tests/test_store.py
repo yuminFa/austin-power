@@ -127,3 +127,11 @@ def test_import_rules(conn):
         assert store.import_row(conn, r()) == "skipped"  # no timestamps, exists
         assert store.import_row(conn, r(body="new", created_at=5, updated_at=30)) == "updated"
     assert conn.execute("select body, created_at, updated_at from note").fetchone() == ("new", 10, 30)
+
+
+def test_import_explicit_empty_session_id_is_a_real_change(conn):
+    store.save(conn, title="t", body="b", session_id="s1", now=10)
+    row = ImportRow(title="t", body="b", project="", kind=None, session_id="", created_at=10, updated_at=10)
+    with db.write_txn(conn):
+        assert store.import_row(conn, row) == "updated"
+    assert conn.execute("select session_id from note").fetchone() == ("",)

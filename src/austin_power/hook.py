@@ -37,8 +37,12 @@ def call_tool(cfg, token: str, name: str, args: dict, timeout: float = 5.0) -> d
     req = urllib.request.Request(cfg.mcp_url, data=body, method="POST", headers={
         "Authorization": f"Bearer {token}", "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-06-18"})
+    # Loopback requests must never go through an env-configured proxy (HTTP_PROXY/
+    # http_proxy etc.) — build a proxy-free opener rather than urlopen's default,
+    # which honors those env vars via ProxyHandler.from_environment().
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with opener.open(req, timeout=timeout) as r:
             payload = json.load(r)
     except urllib.error.HTTPError as e:
         raise ServerError(f"HTTP {e.code}") from None

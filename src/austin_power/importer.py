@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 import time
 from datetime import UTC, datetime
@@ -22,6 +23,8 @@ def _ts(field: str, value) -> int | None:
         raise ValueError(f"{field}: not a timestamp")  # noqa: TRY004 - ValueError is this function's contract
     if isinstance(value, (int, float)):
         n = float(value)
+        if not math.isfinite(n):
+            raise ValueError(f"{field}: out of range")
         if n >= 1e11:
             n /= 1000
     elif isinstance(value, str):
@@ -57,6 +60,28 @@ def parse_line(line: str) -> store.ImportRow:
     if c is not None and u < c:
         raise ValueError("updated_at is earlier than created_at")
     return store.ImportRow(title, body, project, kind, sid, c, u)
+
+
+def _simulate_apply(row: store.ImportRow, existing, action: str):
+    """Shadow-state form of what store.import_row would leave in the DB for
+    `row`, given `existing` (the row's prior shadow/DB state) and the `action`
+    store._decide chose — used only to keep dry-run's per-line simulation in
+    sync with duplicate rows seen earlier in the same file."""
+    if action == "skipped":
+        return existing
+    if action == "created":
+        c = row.created_at if row.created_at is not None else 0
+        u = row.updated_at if row.updated_at is not None else c
+        return (None, row.body, row.kind or "fact", row.session_id, c, u)
+    _, _body, kind, sid, c, _u = existing
+    return (
+        existing[0],
+        row.body,
+        row.kind if row.kind is not None else kind,
+        row.session_id if row.session_id is not None else sid,
+        c,
+        row.updated_at,
+    )
 
 
 def _read_rows(path: Path):
@@ -106,11 +131,21 @@ def run_import(cfg: Config, path: Path, *, dry_run: bool, out=None) -> int:
         except db.SchemaTooNewError as e:
             print(f"error: {e}", file=out)
             return 1
+        # Simulate sequential upserts with a shadow dict so duplicate rows within
+        # the same file count the way a real import would (e.g. two identical
+        # rows on an empty DB: the first is "created", the second then sees that
+        # simulated row as existing and is "skipped", not double-counted as
+        # "created").
+        shadow: dict[tuple[str, str], tuple | None] = {}
         for n, row, err in _read_rows(path):
             if err:
                 failures.append(f"line {n}: {err}")
-            else:
-                counts[store.plan_import_row(conn, row)] += 1
+                continue
+            key = (row.project, row.title)
+            existing = shadow[key] if key in shadow else (None if conn is None else store._existing(conn, row.project, row.title))
+            action = store._decide(row, existing)
+            counts[action] += 1
+            shadow[key] = _simulate_apply(row, existing, action)
         report()
         return 1 if failures else 0
 
@@ -122,6 +157,9 @@ def run_import(cfg: Config, path: Path, *, dry_run: bool, out=None) -> int:
             conn = db.open_db(cfg.db_path, rebuild_allowed=have_lock)
         except (db.TokenizerMismatchError, db.SchemaTooNewError) as e:
             print(f"error: {e}", file=out)
+            return 1
+        except (apsw.Error, OSError) as e:
+            print(f"error: cannot open database {cfg.db_path}: {type(e).__name__}: {e}", file=out)
             return 1
         batch: list = []
 

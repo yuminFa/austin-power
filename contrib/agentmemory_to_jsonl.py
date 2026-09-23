@@ -50,7 +50,7 @@ def _first_line(text: str) -> str:
 def convert(store_dir: Path) -> tuple[list[dict], list[str]]:
     mems = _load(Path(store_dir) / "mem%3Amemories.bin")
     sessions = _load(Path(store_dir) / "mem%3Asessions.bin")
-    rows, skips, seen = [], [], Counter()
+    rows, skips, emitted = [], [], set()
     for mid in sorted(mems):
         m = mems[mid]
         try:
@@ -65,11 +65,12 @@ def convert(store_dir: Path) -> tuple[list[dict], list[str]]:
             if not title or not content.strip():
                 raise ValueError("empty title or content")
             base = title[:TITLE_MAX]
-            seen[(project, base)] += 1
-            n = seen[(project, base)]
-            if n > 1:
+            n = 1
+            while (project, base) in emitted:
+                n += 1
                 suffix = f" ({n})"
                 base = title[:TITLE_MAX - len(suffix)] + suffix
+            emitted.add((project, base))
             body = content
             if m.get("concepts"):
                 body += "\n\nconcepts: " + ", ".join(map(str, m["concepts"]))
