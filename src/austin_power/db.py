@@ -81,7 +81,7 @@ def _create_private(path: Path) -> None:
     group/world-searchable directory this call doesn't own). Pre-existing
     files are left untouched — this never chmods a file the caller already
     has. SQLite gives -wal/-shm the main file's mode, so they follow."""
-    if os.name == "win32" or path.exists():
+    if os.name != "posix" or path.exists():
         return
     try:
         fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

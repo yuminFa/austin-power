@@ -99,8 +99,8 @@ def test_open_db_creates_new_db_file_private_even_in_shared_dir(tmp_path):
         try:
             assert (path.stat().st_mode & 0o777) == 0o600
             wal = path.with_name(path.name + "-wal")
-            if wal.exists():
-                assert (wal.stat().st_mode & 0o777) == 0o600
+            assert wal.exists()  # WAL mode + open connection: sidecar must exist here
+            assert (wal.stat().st_mode & 0o777) == 0o600
         finally:
             c.close()
     finally:
