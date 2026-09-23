@@ -288,3 +288,10 @@ def test_invalid_log_level_does_not_block_hooks(tmp_path, monkeypatch, fake_pope
     p = {"session_id": "s", "cwd": str(tmp_path), "transcript_path": str(tmp_path / "t.jsonl")}
     code = hook.main("session-end", stdin=io.StringIO(json.dumps(p)), stdout=io.StringIO(), stderr=io.StringIO(), env=env)
     assert code == 0 and len(fake_popen) == 1
+
+def test_pre_compact_records_transcript_size(tmp_path, monkeypatch, fake_popen):
+    t = tmp_path / "rollout.jsonl"; t.write_text('{"type":"session_meta"}\n')
+    code, _o, _e = run("pre-compact", {"session_id": "s", "cwd": str(tmp_path), "transcript_path": str(t)}, tmp_path, monkeypatch)
+    assert code == 0 and len(fake_popen) == 1
+    job = json.loads(_job_files(tmp_path)[0].read_text())
+    assert job["source"] == "compact" and job["transcript_bytes"] == t.stat().st_size and "text" not in job

@@ -54,8 +54,14 @@ Codex CLI supports its own hook events (`PreCompact`, `SessionEnd`, etc.), separ
 
 ```json
 {
-  "PreCompact": "austin-power hook pre-compact",
-  "SessionEnd": "austin-power hook session-end"
+  "hooks": {
+    "PreCompact": [
+      {"matcher": "manual|auto", "hooks": [{"type": "command", "command": "austin-power hook pre-compact", "timeout": 30}]}
+    ],
+    "SessionEnd": [
+      {"hooks": [{"type": "command", "command": "austin-power hook session-end", "timeout": 10}]}
+    ]
+  }
 }
 ```
 

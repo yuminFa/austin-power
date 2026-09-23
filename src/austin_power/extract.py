@@ -70,7 +70,7 @@ def _message_text(e) -> str:
         if isinstance(content, str):
             text = content
         elif isinstance(content, list):
-            text = "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+            text = "\n".join(b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str))
         else:
             return ""
         text = _SYSTEM_REMINDER_RE.sub("", text).strip()
@@ -78,7 +78,7 @@ def _message_text(e) -> str:
             return ""
         return "[user]\n" + text
     if etype == "assistant" and isinstance(content, list):
-        text = "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text").strip()
+        text = "\n".join(b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)).strip()
         return "[assistant]\n" + text if text else ""
     return ""
 
@@ -107,8 +107,9 @@ def _codex_message_text(e) -> str:
         if prefix is None or not isinstance(content, list):
             return ""
         text = "\n".join(
-            b.get("text", "") for b in content
+            b["text"] for b in content
             if isinstance(b, dict) and isinstance(b.get("type"), str) and b.get("type").lower() == "text"
+            and isinstance(b.get("text"), str)
         )
     else:
         prefix = _CODEX_LEGACY_PREFIX.get(ptype)
@@ -122,15 +123,21 @@ def _codex_message_text(e) -> str:
     return f"{prefix}\n{text}"
 
 
-def transcript_tail(path, max_chars: int = MAX_CHARS) -> str:
+def transcript_tail(path, max_chars: int = MAX_CHARS, max_bytes: int | None = None) -> str:
     # Stream line by line: a long session's JSONL can be large, so keep only the
     # messages after the last compact_boundary, bounded to ~2x the output cap.
     messages: deque[str] = deque()
     total = 0
     try:
-        with open(path, encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
-                line = line.strip()
+        with open(path, "rb") as fh:
+            read = 0
+            for raw in fh:
+                # PreCompact: stop at the size the file had when the hook fired, so a
+                # `compacted` line Codex appends afterwards can't wipe what it compacts.
+                read += len(raw)
+                if max_bytes is not None and read > max_bytes:
+                    break
+                line = raw.decode("utf-8", errors="ignore").strip()
                 if not line:
                     continue
                 try:
@@ -489,7 +496,8 @@ def main(argv: list[str]) -> int:
             if not isinstance(text, str):
                 tp = obj.get("transcript_path")
                 if isinstance(tp, str) and tp:
-                    text = transcript_tail(tp, MAX_CHARS)
+                    mb = obj.get("transcript_bytes")
+                    text = transcript_tail(tp, MAX_CHARS, mb if isinstance(mb, int) and not isinstance(mb, bool) and mb >= 0 else None)
                 else:
                     log(_line(source, sid, "none", 0, 0, skipped="badjob"))
                     return 0

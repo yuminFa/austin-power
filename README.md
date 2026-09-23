@@ -124,8 +124,14 @@ Codex CLI도 자체 hook 이벤트(`PreCompact`·`SessionEnd` 등)를 지원합�
 
 ```json
 {
-  "PreCompact": "austin-power hook pre-compact",
-  "SessionEnd": "austin-power hook session-end"
+  "hooks": {
+    "PreCompact": [
+      {"matcher": "manual|auto", "hooks": [{"type": "command", "command": "austin-power hook pre-compact", "timeout": 30}]}
+    ],
+    "SessionEnd": [
+      {"hooks": [{"type": "command", "command": "austin-power hook session-end", "timeout": 10}]}
+    ]
+  }
 }
 ```
 

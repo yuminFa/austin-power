@@ -405,3 +405,17 @@ def test_portability_no_personal_identifiers():
             if pat.lower() in content:
                 hits.append(f"{rel}: {pat!r}")
     assert not hits, "personal identifiers found in tracked files: " + ", ".join(hits)
+
+
+def _codex_hooks_blocks(name):
+    text = (ROOT / name).read_text(encoding="utf-8")
+    return [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", text, re.DOTALL) if "pre-compact" in b]
+
+
+@pytest.mark.parametrize("name", ["README.md", "README.en.md"])
+def test_readme_codex_hooks_snippet_uses_real_schema(name):
+    blocks = _codex_hooks_blocks(name)
+    assert len(blocks) == 1
+    hooks = blocks[0]["hooks"]
+    cmds = {ev: [h["command"] for g in hooks[ev] for h in g["hooks"] if h["type"] == "command"] for ev in ("PreCompact", "SessionEnd")}
+    assert cmds == {"PreCompact": ["austin-power hook pre-compact"], "SessionEnd": ["austin-power hook session-end"]}

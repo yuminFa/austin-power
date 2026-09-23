@@ -693,3 +693,27 @@ def test_transcript_tail_streams_large_file_bounded(tmp_path):
             fh.write(json.dumps({"type": "user", "message": {"content": f"msg {i} " + "x" * 200}}) + "\n")
     out = extract.transcript_tail(p, max_chars=1000)
     assert len(out) <= 1000 and "msg 2999" in out and "msg 0 " not in out
+
+
+def _codex_row(kind, text):
+    return {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+        "type": kind, "content": [{"type": "text", "text": text}]}}}
+
+
+def test_transcript_tail_max_bytes_ignores_compacted_line_appended_later(tmp_path):
+    p = tmp_path / "t.jsonl"
+    p.write_text(json.dumps(_codex_row("UserMessage", "before compaction")) + "\n")
+    size = p.stat().st_size
+    with p.open("a") as fh:
+        fh.write(json.dumps({"type": "compacted", "payload": {}}) + "\n")
+        fh.write(json.dumps(_codex_row("UserMessage", "after")) + "\n")
+    assert extract.transcript_tail(p, 10000, max_bytes=size) == "[user]\nbefore compaction"
+    assert extract.transcript_tail(p, 10000) == "[user]\nafter"
+
+
+def test_transcript_tail_non_string_text_block_drops_only_that_block(tmp_path):
+    rows = [{"type": "event_msg", "payload": {"type": "item_completed", "item": {
+                "type": "UserMessage", "content": [{"type": "text", "text": None}, {"type": "text", "text": "ok"}]}}},
+            _codex_row("AgentMessage", "fine")]
+    p = _jsonl(tmp_path, "t.jsonl", rows)
+    assert extract.transcript_tail(p, 10000) == "[user]\nok\n\n[assistant]\nfine"

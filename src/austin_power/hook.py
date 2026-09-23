@@ -169,7 +169,12 @@ def _pre_compact(data: dict, cfg, env, out, err) -> None:
     path = data.get("transcript_path")
     if not isinstance(sid, str) or not sid or not isinstance(path, str) or not path:
         return
-    spawn_extract(cfg, env, {"source": "compact", "session_id": sid, "cwd": data.get("cwd") or "", "transcript_path": path})
+    job = {"source": "compact", "session_id": sid, "cwd": data.get("cwd") or "", "transcript_path": path}
+    try:
+        job["transcript_bytes"] = os.path.getsize(path)  # worker reads only what exists now
+    except OSError:
+        pass
+    spawn_extract(cfg, env, job)
 
 def _session_start(data: dict, cfg, env, out, err) -> None:
     if data.get("source") == "compact":
