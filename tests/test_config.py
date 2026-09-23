@@ -59,3 +59,19 @@ def test_ensure_home_mode(tmp_path):
     cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path / "h")})
     ensure_home(cfg)
     assert (cfg.home.stat().st_mode & 0o777) == 0o700
+
+def test_log_level_empty_defaults_to_info(tmp_path):
+    cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path), "AUSTIN_POWER_LOG_LEVEL": ""})
+    assert cfg.log_level == "INFO"
+
+def test_log_level_whitespace_defaults_to_info(tmp_path):
+    cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path), "AUSTIN_POWER_LOG_LEVEL": "   "})
+    assert cfg.log_level == "INFO"
+
+def test_log_level_lowercase_is_uppercased(tmp_path):
+    cfg = load_config(env={"AUSTIN_POWER_HOME": str(tmp_path), "AUSTIN_POWER_LOG_LEVEL": "debug"})
+    assert cfg.log_level == "DEBUG"
+
+def test_log_level_unsupported_raises_config_error(tmp_path):
+    with pytest.raises(ConfigError):
+        load_config(env={"AUSTIN_POWER_HOME": str(tmp_path), "AUSTIN_POWER_LOG_LEVEL": "TRACE"})
