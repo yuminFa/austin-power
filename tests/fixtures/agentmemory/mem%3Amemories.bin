@@ -1,0 +1,7 @@
+{
+ "mem_1": {"id":"mem_1","title":"[wiki:x] ---\ntitle: 견적 시스템\nproject: shop\n---","content":"[wiki:x] ---\ntitle: 견적 시스템\nproject: shop\n---\n본문 하나","type":"Architecture","concepts":["quote","견적"],"files":["a.py"],"isLatest":true,"sessionIds":[],"createdAt":"2026-07-12T08:47:54.828Z","updatedAt":"2026-07-12T08:47:54.828Z"},
+ "mem_2": {"id":"mem_2","title":"배포 절차","content":"배포 본문","type":"workflow","concepts":[],"files":[],"isLatest":true,"sessionIds":["s1","s2","s3"],"createdAt":"2026-07-13T00:00:00Z","updatedAt":"2026-07-14T00:00:00Z"},
+ "mem_3": {"id":"mem_3","title":"배포 절차","content":"같은 제목 다른 본문","type":"workflow","concepts":[],"files":[],"isLatest":true,"sessionIds":["s1"],"createdAt":"2026-07-13T00:00:00Z","updatedAt":"2026-07-13T00:00:00Z"},
+ "mem_4": {"id":"mem_4","title":"old","content":"superseded","type":"fact","isLatest":false,"sessionIds":[],"createdAt":"2026-07-01T00:00:00Z","updatedAt":"2026-07-01T00:00:00Z"},
+ "mem_5": {"id":"mem_5","title":"broken"}
+}
