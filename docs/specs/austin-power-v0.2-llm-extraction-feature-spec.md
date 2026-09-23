@@ -160,6 +160,19 @@ status: reviewed
 | C21 | 로그에 본문 미기록 | 로그 파일에 텍스트·title 없음 | unit |
 | C22 | 실제 codex/claude E2E | 기억 저장 확인 | 메인 세션 수동 1회 |
 
+### 2.12 Codex CLI 지원 (추가 — 2026-09-23)
+
+배경 [verified-partial: 관측]: Codex CLI(0.153)는 hook 이벤트 `PreCompact`·`PostCompact`·`SessionStart`·`SessionEnd` 등을 지원한다(바이너리의 `HookEventsToml` 목록). Codex rollout JSONL은 대화를 `{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage"|"AgentMessage","content":[{"type":"text"|"Text","text":…}]}}}` 로 기록하고, 압축 지점을 `{"type":"compacted",…}` 로 남긴다. 옛 형식 `event_msg/user_message`·`agent_message`(payload.message 문자열)는 최근 30개 세션에서 0건이다. 그래서 기존 Codex hook(`~/.codex/hooks/austin-power-pre-compact.mjs`, 레포 밖)은 메시지를 0건 추출한다(실측 `messageCount 0`).
+
+1. **`austin-power hook pre-compact`(신규 event)**: 입력 `session_id`·`transcript_path`·`cwd`. §2.3과 같은 검증 후 job `{"source":"compact","session_id","cwd","transcript_path"}` spawn. 동기 파싱 없음. Claude Code에는 등록하지 않는다(Claude는 PostCompact 요약을 쓴다).
+2. **워커**: `compact` job이 `text`(str)를 가지면 그것을, 없고 `transcript_path`가 있으면 `transcript_tail`을 입력으로 쓴다. 둘 다 없으면 badjob.
+3. **`transcript_tail` 형식 자동 판별**(한 파일 안에서 줄 단위):
+   - Codex 경계: `type=="compacted"` 줄 → 그때까지 모은 메시지를 버린다(Claude `compact_boundary`와 동일 취급).
+   - Codex 메시지: `type=="event_msg"` 이고 `payload.type=="item_completed"` 이고 `payload.item.type ∈ {UserMessage, AgentMessage}` → `content` 리스트에서 `type`이 대소문자 무관 `text`인 블록의 `text`를 `\n` 연결. UserMessage → `[user]`, AgentMessage → `[assistant]`. 옛 형식 `payload.type ∈ {user_message, agent_message}` 이고 `payload.message`가 str이면 같은 방식으로 수용.
+   - `<system-reminder>` 제거·`<command-` 계열 제외·빈 텍스트 제외 규칙은 공통 적용. `response_item`·`reasoning`·도구 호출은 제외.
+4. **Codex 등록(사용자 로컬, 레포 밖)**: `~/.codex/hooks.json`의 `PreCompact`를 `austin-power hook pre-compact`로 교체하고, `SessionEnd`에 `austin-power hook session-end`를 추가한다. 기존 mjs hook은 삭제한다(백업 보관). `austin-power setup hooks`는 Claude용 출력을 유지하고, README에 Codex 등록 예시를 추가한다.
+5. **케이스**: C23 Codex rollout(경계 없음/`compacted` 뒤/옛 형식 혼재/`reasoning`·도구 호출 제외), C24 `pre-compact` event job 형태, C25 compact job에 `transcript_path`만 있을 때 tail 사용, C26 Codex 실제 E2E(메인 세션 수동).
+
 ## 3. 인터페이스 요약
 
 - `hook.main("session-end", …) -> int`
