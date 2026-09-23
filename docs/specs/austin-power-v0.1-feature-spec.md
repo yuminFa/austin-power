@@ -28,7 +28,7 @@ status: draft
 
 | 원 설계 | v0.1 | 이유 |
 |---|---|---|
-| 상주 데몬 없음, 세션마다 stdio 서버 | **전역 HTTP 서버 1개**(상주) | 사용자 결정. Kiwi 모델(로딩 1.61s 실측)을 세션마다 올리지 않고 한 번만 로드. 대가: 상주 메모리 0이 아니게 됨(Kiwi 모델 상주 — 예산은 §4 U8) |
+| 상주 데몬 없음, 세션마다 stdio 서버 | **전역 HTTP 서버 1개**(상주) | 사용자 결정. Kiwi 모델(로딩 1.61s 실측)을 세션마다 올리지 않고 한 번만 로드. 대가: 상주 프로세스가 생김 — Kiwi 모델(~400MB)은 서버에 두지 않고 유휴 시 종료되는 워커로 분리(2.5.1, 예산은 §4 U8) |
 | TypeScript + better-sqlite3 | **Python + apsw** | Kiwi(`kiwipiepy`) 사용, apsw wheel이 SQLite를 번들해 사용자 환경의 SQLite 버전과 무관해짐, FTS5 Python 토크나이저 등록 가능 |
 | `tokenize='unicode61'` | **Kiwi 기반 커스텀 토크나이저 `kiwi`** | 한국어 조사·어미 분리 |
 | `id TEXT PRIMARY KEY` + `content_rowid='rowid'` | **`id INTEGER PRIMARY KEY`** | 명시적 INTEGER PRIMARY KEY가 없는 테이블은 `VACUUM`이 rowid를 재번호할 수 있어 external-content FTS가 어긋난다(SQLite `VACUUM` 문서) |
@@ -59,6 +59,7 @@ status: draft
 | 호스트 | `127.0.0.1` | `AUSTIN_POWER_HOST` | `--host` (`serve`·`status`·`setup *`) |
 | 포트 | `7760` | `AUSTIN_POWER_PORT` | `--port` (`serve`·`status`·`setup *`) |
 | 주입 상한(자) | `4000` | `AUSTIN_POWER_INJECT_CHARS` | — |
+| Kiwi 워커 유휴 종료(초) | `600` (`0`=상주) | `AUSTIN_POWER_KIWI_IDLE` | — |
 | 로그 레벨 | `INFO` | `AUSTIN_POWER_LOG_LEVEL` | — |
 
 - 우선순위: CLI 옵션 > 환경변수 > 기본값. 설정 파일(toml)은 v0.1에 두지 않는다.
@@ -176,6 +177,23 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 **질의 효과**: FTS5가 MATCH 문자열의 구절에 같은 토크나이저(질의 모드)를 적용 → `만들었습니다`로 찾으면 어간 `만들`이 매칭(probe 실측: `만들다` → `[만들]었습니다` 하이라이트).
 
 **오류**: Kiwi가 예외를 던지면 FTS5 호출이 SQLite 오류로 실패 → 해당 쓰기·검색 트랜잭션 롤백 → 2.6 오류 규칙.
+
+### 2.5.1 Kiwi 실행 위치 — 서버는 워커 프로세스 (메모리 대책)
+
+실측(2026-09-23, macOS arm64): 서버 자체(apsw+mcp+uvicorn)는 76MB, Kiwi 기본 모델은 로드만으로 약 380MB, 첫 호출 후 약 500MB. 같은 프로세스에서 Kiwi 객체를 버려도 메모리가 OS로 돌아오지 않음(481MB → 361~473MB). 그래서 상주 서버에서는 Kiwi를 **자식 프로세스**로 분리해 유휴 시 종료한다.
+
+- **백엔드 두 가지**, 규칙(2.5)과 서명은 동일:
+  - `inproc` — 현재 프로세스에서 `Kiwi()` 직접 사용. `import`·post-compact 폴백·테스트가 사용(단명 프로세스라 종료 시 회수됨).
+  - `worker` — 서버가 사용. `analyze()`의 Kiwi 호출 부분만 워커에 위임하고 ASCII 런 처리·병합은 부모에서 한다.
+- **워커 실행 파일**: 반드시 `sys.executable -m austin_power.kiwi_worker` — PATH의 `python`을 쓰면 uv tool 환경 밖의 인터프리터·다른 Kiwi 버전이 잡힐 수 있다.
+- **잠금 밖 준비**: 워커 기동·ready·서명 확인은 **SQLite 쓰기 잠금을 잡기 전에** 끝낸다 — `db.write_txn()`은 `BEGIN IMMEDIATE` 직전에 `tokenizer.ensure_ready()`를 호출하고, `search`도 질의 전에 호출한다(`inproc`에서는 Kiwi 로드, `worker`에서는 기동·핸드셰이크). 그래서 유휴 후 첫 쓰기의 ~1초 모델 로드가 다른 writer의 `busy_timeout`을 잡아먹지 않는다. 재색인(`open_db` 6단계)도 `BEGIN IMMEDIATE` 전에 `ensure_ready()`.
+- **워커 프로토콜**: 위 명령을 `subprocess.Popen(stdin=PIPE, stdout=PIPE, stderr=부모 로그로)`로 기동. 요청 한 줄 JSON `{"text": "..."}` → 응답 한 줄 JSON `{"tokens": [[form, tag, start, len], ...]}` 또는 `{"error": "..."}`. UTF-8, 줄바꿈 구분(텍스트 안 개행은 JSON 이스케이프). 워커는 기동 직후 `{"ready": true, "signature": "<서명>"}` 한 줄을 먼저 쓴다.
+- **수명**: 첫 Kiwi 호출 때 기동(지연 기동). 마지막 요청 후 `AUSTIN_POWER_KIWI_IDLE`초(기본 `600`) 동안 요청이 없으면 부모가 stdin을 닫고 종료를 기다린다(2초 후 kill). `0`이면 유휴 종료하지 않는다(상주). 서버 종료 시 워커도 종료.
+- **서명 확인**: 워커가 보고한 서명이 부모의 `tokenizer.signature()`와 다르면(설치 중 버전이 바뀐 경우) 워커를 종료하고 `TokenizerMismatchError`.
+- **장애**: 요청 중 워커가 죽거나(EOF) 응답이 깨지면 워커를 재기동해 **1회 재시도**. 또 실패하면 예외 → FTS5 호출 실패 → 2.6 `storage error`. 요청당 타임아웃 30초(초과 시 kill 후 같은 규칙).
+- **동시성**: 워커 호출은 클라이언트 내부 락으로 직렬화(서버 DB 락 안에서 불리므로 사실상 경합 없음).
+- **효과 목표**(U8 재정의): 유휴 상태 서버 RSS ≤ 120MB, 사용 중 서버+워커 합계 ≤ 650MB, 유휴 후 첫 호출 지연 ≤ 3초, `worker` 백엔드로 1,000건 재색인 ≤ 15초(IPC 왕복이 행×열 수만큼 생기므로 측정으로 확인).
+- **검증**: 두 백엔드가 같은 입력에 같은 `analyze()` 결과를 내는지 대조 테스트(인덱스 어긋남 방지) / 워커 유휴 종료 후 재기동 / 워커 kill 후 1회 재시도 성공 / 서명 불일치 워커 거부 / 서버 SIGTERM 시 워커 종료 / 부모가 SIGKILL로 죽으면 워커는 stdin EOF를 보고 스스로 종료(고아 없음) / 유휴 워커 기동이 쓰기 잠금 밖에서 일어나는지(워커 기동 중 다른 연결의 `BEGIN IMMEDIATE`가 즉시 성공).
 
 ### 2.6 MCP 도구
 
@@ -348,6 +366,7 @@ agentmemory 사용자가 옮겨올 수 있게 제공하는 독립 변환 스크�
 - [ ] U5. repo description 설정 — `deferrable` / `gh`가 회사 계정만 로그인돼 있어 사용자가 개인 계정으로 설정(문구는 이 작업에서 준비)
 - [x] U6. stateless에서 `initialize` 없이 `tools/call` 단독 요청 — 스크래치 probe에서 별도 요청으로 200 관측. 통합 테스트로 회귀 고정
 - [ ] U7. `compact_summary` 실제 길이 분포 — `deferrable` / 절단이 잦으면 상한 재조정
+- [ ] U8'. (2.5.1 워커 분리 후 재측정 대상 — 목표치는 2.5.1 "효과 목표") 아래는 워커 분리 전 1차 측정 기록.
 - [x] U8. 서버 상주 메모리(RSS) 예산 — `deferrable` / `scripts/measure_rss.py`로 실측(2026-09-23, macOS arm64): 기동 직후 426.2MB → 첫 호출(Kiwi 지연 로딩) 후 571.2MB → 1,000회 호출 후 571.7MB. 합격 기준(기동 직후 대비 20% 이하)은 **미달성**(growth_pct 34.2%). 다만 첫 호출→1,000회 호출 구간은 +0.09%로, 세션·캐시가 호출량에 비례해 누적되지는 않음이 관측됨 — 34.2%는 거의 전부 `tokenizer.get_kiwi()`의 1회성 지연 로딩(첫 Korean-text 호출 시 Kiwi 모델 적재) 때문. 기동 직후 RSS를 "가벼운 것"으로 볼지, 실사용에서는 어차피 첫 호출에 Kiwi가 로드되므로 워밍업 후 수치를 기준선으로 재정의할지는 이 작업 범위 밖의 설계 판단으로 남김(decision_needed)
 
 ## 5. 검증 관심사
