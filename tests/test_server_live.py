@@ -4,6 +4,7 @@ Task 5's CLI (`austin-power serve`) doesn't exist yet, so this drives
 `austin_power.server.serve()` directly via `python -c` per the plan's fallback.
 """
 
+import io
 import json
 import signal
 import socket
@@ -13,6 +14,9 @@ import time
 import urllib.request
 
 import pytest
+
+from austin_power import hook
+from austin_power.config import load_config
 
 pytestmark = pytest.mark.kiwi
 
@@ -105,3 +109,50 @@ def test_serve_lifecycle_and_second_instance_refused(tmp_path):
         # installed uvicorn source and by running this subprocess standalone.
         assert rc in (0, -signal.SIGTERM)
         assert "Finished server process" in err
+
+
+def test_hook_live_post_compact_then_session_start(tmp_path):
+    home = tmp_path / "h"
+    port = _free_port()
+    proc = _spawn(home, port)
+    try:
+        _wait_health(port)
+        hook_env = {"AUSTIN_POWER_HOME": str(home), "AUSTIN_POWER_PORT": str(port), "AUSTIN_POWER_PROJECT": "proj"}
+
+        # post-compact hits the live server (not the stdlib-only fallback path).
+        out, err = io.StringIO(), io.StringIO()
+        code = hook.main(
+            "post-compact",
+            stdin=io.StringIO(
+                json.dumps({"session_id": "abc", "cwd": str(tmp_path), "compact_summary": "라이브 훅 요약"})
+            ),
+            stdout=out,
+            stderr=err,
+            env=hook_env,
+        )
+        assert code == 0 and err.getvalue() == ""
+
+        # The row must be visible through `search` over the same live server.
+        cfg = load_config(env=hook_env)
+        token = (home / "token").read_text().strip()
+        result = hook.call_tool(cfg, token, "search", {"query": "라이브"})
+        titles = [r["title"] for r in result["results"]]
+        assert "session abc" in titles
+
+        # session-start must inject that title as additionalContext JSON on stdout.
+        out2, err2 = io.StringIO(), io.StringIO()
+        code2 = hook.main(
+            "session-start",
+            stdin=io.StringIO(json.dumps({"session_id": "s2", "cwd": str(tmp_path), "source": "startup"})),
+            stdout=out2,
+            stderr=err2,
+            env=hook_env,
+        )
+        assert code2 == 0 and err2.getvalue() == ""
+        payload = json.loads(out2.getvalue())
+        additional_context = payload["hookSpecificOutput"]["additionalContext"]
+        assert payload["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+        assert "session abc" in additional_context
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=15)
